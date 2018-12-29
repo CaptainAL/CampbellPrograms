@@ -1,0 +1,68 @@
+Public Send As Boolean
+Public PTemp, batt_volt, Temp_Threshold = 40
+Public Outstat
+Public EmailSent
+Public MessageCount = 0
+Public TXEmailResult As String *50
+Public LastFileName As String *50
+Public TXMessage As String *200
+Public Addressees(10) As String *52 = {"8312953242@vtext.com","ckocher@adhenvironmental.com"}
+Public TXToAddr As String *530
+
+Dim i
+
+'EmailSend parameters
+Const TXServerAddr = "smtp.gmail.com:587" 'This is the address of the SMTP server you want to use to send the email
+Const TXFromAddr = "sanleandrocrk@gmail.com" 'This is the email address that the recipient will see in the 'From'
+Const TXSubject = "Message From SLC CR1000" 'This is the subject of the email you will be sending
+Const TXAttach = "USR:Temp" 'This is the local name of any attachments you want to send
+Const TXUserName = "sanleandrocrk@gmail.com" 'This is the user name for the email account you will be sending the email from
+Const TXPassword = "3550nmst" 'This is the password for the email account you will be senging the email from
+
+'Define Data Tables
+DataTable (Test,1,-1) 'This is a data table named test that will write 1000 records before it starts over writing data
+	DataInterval (0,15,Sec,10) 'This data interval means a new record will be created every 15 seconds
+	TableFile(TXAttach,8,-1,12,0,Sec,Outstat,LastFileName) 'Store results in ASCII (TOA5) with Header, Time-stamps, and Record Numbers
+	Minimum (1,batt_volt,FP2,0,False) 'This means that you will record the minimum battery voltage over the last 15 second period
+	Sample (1,PTemp,FP2) 'This means that you will record the panel temperature at the top of a 15 second interval
+EndTable
+
+'Main Program
+BeginProg
+  
+  SetStatus("USRDriveSize",16384)
+  
+	Scan (1,Sec,0,0) 'This means the program will have a main scan sequence that occurs every 1 second
+		PanelTemp (PTemp,_60Hz) 'This tells the data logger to measure its internal temperature
+		
+		If PTemp > Temp_Threshold Then Send = True 'If the current panel temperature exceeds the temperature threshold then set Send to true to trigger sending a message
+		
+		Battery (batt_volt) 'This tells the data logger to measure the voltage of the power source it is connected to
+
+		'Enter any other measurements you want to make here.....
+		
+		TXMessage = "This is an automated alarm from SLC.  The current temperature of " & PTemp & " has exceeded the threshold." 'Form up the message body.
+		  
+		CallTable Test 'This tells the data logger to call the table named 'Test' defined above
+	
+	NextScan
+
+	SlowSequence 'The slow sequence separates these instructions from the main scan.  The slow sequence cannot hold up the mail scan.
+	Scan (1,Min,3,0) 'This means the slow sequence will occure every minute
+		If Send Then 'If the variable send is equal to true then do the following.
+      'Create address string from non-blank addresses. Note: addresses don't have to be in contiguous array cells.
+		  TXToAddr = Addressees(1)
+		  For i=2 To 10
+		    If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+		  'Send email if any addresses are present.
+		  If TXToAddr<>"" then
+			  EmailSent = EMailSend (TXServerAddr,TXToAddr,TXFromAddr,TXSubject,TXMessage,LastFileName,TXUserName,TXPassword,TXEmailResult) ' This instruction tells the data logger to send an email using all the information from above.
+			  Send = False 'After the email sends, set Send back to false to prevent sending multiple messages
+			  MessageCount = MessageCount + 1  'Count message
+			EndIf
+		EndIf
+	NextScan
+
+EndProg
+

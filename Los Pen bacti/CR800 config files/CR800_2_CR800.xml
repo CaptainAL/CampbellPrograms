@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="file:///C:\Campbellsci\Lib\DevConfigLib\en\v2/summary.xsl"?>
+<device-config device-type="18" major-version="5" minor-version="255" model-no="CR800 Series" serial-no="" timestamp="2018-11-16T11:22:35.201">
+  <setting id="3" name="PakBus Address">
+    <component name="PakBus Address" repeat-count="0">4</component>
+  </setting>
+  <setting id="4" name="Security">
+    <component name="Security Level 1" repeat-count="0">0</component>
+    <component name="Security Level 2" repeat-count="0">0</component>
+    <component name="Security Level 3" repeat-count="0">0</component>
+  </setting>
+  <setting id="96" name="PakBus Encryption Key">
+    <component name="PakBus Encryption Key" repeat-count="0">&#10;</component>
+  </setting>
+  <setting id="2" name="Station Name">
+    <component name="Station Name" repeat-count="0">CR800_2&#10;</component>
+  </setting>
+  <setting id="5" name="Is Router">
+    <component name="Is Router" repeat-count="0">0</component>
+  </setting>
+  <setting id="7" name="Baud Rate RS232">
+    <component name="Baud Rate RS232" repeat-count="0">115200</component>
+  </setting>
+  <setting id="17" name="Beacon Interval RS232">
+    <component name="Beacon Interval RS232" repeat-count="0">0</component>
+  </setting>
+  <setting id="27" name="Verify Interval RS232">
+    <component name="Verify Interval RS232" repeat-count="0">0</component>
+  </setting>
+  <setting id="37" name="Neighbors Allowed RS232" />
+  <setting id="73" name="Baud Rate COMSDC">
+    <component name="Baud Rate COMSDC" repeat-count="0">115200</component>
+  </setting>
+  <setting id="66" name="Ethernet Name Servers" />
+  <setting id="65" name="PakBus/TCP Client Connections">
+    <component name="Server Address" repeat-count="0">166.140.100.63</component>
+    <component name="TCP Port" repeat-count="0">6785</component>
+  </setting>
+  <setting id="56" name="PPP Interface">
+    <component name="PPP Interface" repeat-count="0">1</component>
+    <component name="PPP IP Address" repeat-count="0">166.140.100.65</component>
+    <component name="Reserved" repeat-count="0">&#10;</component>
+    <component name="PPP User Name" repeat-count="0">&#10;</component>
+    <component name="PPP Password" repeat-count="0">&#10;</component>
+    <component name="PPP Dial" repeat-count="0">&#10;</component>
+    <component name="PPP Dial Response" repeat-count="0">CONNECT&#10;</component>
+  </setting>
+  <setting id="85" name="PakBus/TCP Password">
+    <component name="PakBus/TCP Password" repeat-count="0">&#10;</component>
+  </setting>
+</device-config>
+

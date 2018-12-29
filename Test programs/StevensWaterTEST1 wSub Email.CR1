@@ -1,0 +1,96 @@
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date:
+'program author:
+
+'Declare Public Variables
+'Example:
+Public PTemp, BatVolts
+Units BatVolts = volts
+Public Level_raw
+Units Level_raw = inches
+Public Level_offset = 0.0
+Units Level_offset = inches
+Public Level As Float
+Units Level = inches
+
+'Email stuff
+Public Addressees(10) As String *52 = {"7149153360@txt.att.net","alex.messina@woodplc.com"}
+Public TXToAddr As String *530
+Dim i
+Const Subject="Email from CR1000 TEST"
+Const CRLF = CHR(13)+CHR(10)
+Public Message As String * 250
+Public EmailSuccess
+Public ServerResponse As String * 50
+
+' Low Battery Alarm
+Dim BattEmailSuccess
+Public BattAlarmIsOn As Boolean
+
+' Level Alarm
+Dim LevelEmailSuccess
+Public LevelAlarmIsOn As Boolean
+
+'Define Data Tables.
+DataTable (Test,1,-1) 'Set table size to # of records, or -1 to autoallocate.
+	DataInterval (0,10,Sec,10)
+	Minimum (1,BatVolts,FP2,False,False)
+	Sample (1,PTemp,FP2)
+EndTable
+
+' DEFINE Sub-Routines
+Function SendAlarmEmail(EmailSuccess,Alarm_param,Alarm_Val,Alarm_units,Datalogger_Time)
+  ' Construct Message
+	Message = Message + Alarm_param+ " alarm has been triggered! "+ CRLF + CRLF
+	Message = Message + "Currently: " + Alarm_Val + " "+Alarm_units + CRLF + CRLF + CRLF
+	Message = Message + "Datalogger time: " + Datalogger_Time
+	' Construct Address list
+  TXToAddr = Addressees(1)
+	For i=2 To 10
+    If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+  Next i
+  'Send email if any addresses are present.
+  If TXToAddr<>"" Then
+	  EmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+	EndIf
+	
+EndFunction
+
+'Main Program
+BeginProg
+	Scan (10,Sec,0,0)
+		PanelTemp (PTemp,250)
+		Battery (BatVolts)
+		
+    'Battery check and email Alert
+		Battery (BatVolts)
+    ' Low Battery Alarm
+    If BatVolts <= 11.8 AND BattAlarmIsOn = False Then
+      BattEmailSuccess = SendAlarmEmail(EmailSuccess,"Low Battery",BatVolts,"Volts",Status.Timestamp)
+      If BattEmailSuccess = 1 Then
+      	BattAlarmIsOn = True
+      	BattEmailSuccess = 0
+      EndIf
+    EndIf
+
+		'Level Measurement
+		VoltDiff(Level_raw,1,mV2500,1,False,0,_60Hz,0.0375,-15.0)
+		Level = Level_raw + Level_offset
+		
+    ' Level Alarm
+    If Level >= 5 AND LevelAlarmIsOn = False Then
+      LevelEmailSuccess = SendAlarmEmail(EmailSuccess,"Level",Level,"Inches",Status.Timestamp)
+      If LevelEmailSuccess = 1 Then
+      	LevelAlarmIsOn = True
+      	LevelEmailSuccess = 0
+      EndIf
+    EndIf
+
+
+		'Call Output Tables
+		CallTable Test
+	NextScan
+EndProg
+

@@ -1,0 +1,318 @@
+'WOOD, PLC
+'FAMOSA Mass Emission Station Monitoring
+
+'CR800 Series Datalogger
+'date: 11/26/2018
+'program author: Messina
+
+'Program objectives:
+'
+' Measure flow in cfs from Sigma 950 bubbler flowmeter
+' Measure rain in inches from rain gauge connected to Sigma 950
+' Alert when level triggered
+
+
+PreserveVariables
+
+'Declare Public Variables
+
+' Set LevelTrigger based on Flowmeter data
+Public Sample_LevelTrigger = 1.0
+Units Sample_LevelTrigger = inches
+Public Sampling_is_triggered As Boolean
+
+
+' Panel Temperature and Battery Voltage
+Public CR_Temp, CR_BatVolts
+Units CR_BatVolts = volts
+Units CR_Temp = degC
+
+' Data from Sigma 950 Flowmeter: Level(inches),Flow(cfs),TotalFlow(cf),Rain(inches)
+Const ModbusCom1 = ComSDC7 'Modbus Address
+
+' FLOWMETER
+' Flowmeter data container (6 variables)
+Public modbusdata(6)
+' Battery
+Alias modbusdata(1) = Battery_950
+Units Battery_950 = volts
+' Water Level
+Alias modbusdata(2) = Level_950
+Units Level_950 = inches
+' Flow
+Alias modbusdata(3) = Flow_950
+Units Flow_950 = cfs
+' Total Flow
+Alias modbusdata(4) = Flow_total_950
+Units Flow_total_950 = cf
+' Velocity
+Alias modbusdata(5) = Velocity_950
+Units Velocity_950 = fps
+' Rain
+Alias modbusdata(6) = rain_950
+Units rain_950 = inches
+
+' Rain Increment
+Dim rain_950_previous
+Public Rain_increment = 0.0
+Units Rain_increment = inches
+
+' PT data (if used)
+Public PT_Level_raw As Float
+Units PT_Level_raw = inches
+Public PT_Level_offset = 0.0
+Units PT_Level_offset = inches
+Public PT_Level As Float
+Units PT_Level = inches
+
+
+' DECLARE OTHER DATA VARIABLES
+
+' ALARMS
+' Low Battery Alarm
+Public BattEmailSuccess
+Public BattAlarmIsOn As Boolean
+
+' Level Alarm
+Public LevelEmailSuccess
+Public LevelAlarmIsOn As Boolean
+
+' Test Alarm in field
+Public TestEmailNotification As Boolean
+Public TestEmailSuccess 
+
+'Email stuff
+Public Addressees(10) As String *52 = {"7149153360@txt.att.net","alex.messina@woodplc.com","8583428828@vtext.com"}
+Public TXToAddr As String *530
+Dim i
+Public site_name As String * 20
+Public Subject As String = "Alarm from " 
+Const CRLF = CHR(13)+CHR(10)
+Public Message As String * 250
+Public ServerResponse As String * 50
+
+' COMS FAILURES (For ModBus)
+' Battery
+Public COMS_result
+Public COMS_fail_cntr As Long
+Public result
+
+
+' RESETS
+' Event reset
+Public Event_reset As Boolean
+' Flowmeter resets
+Public Coms_results_reset As Boolean
+' Master resets
+Public master_reset As Boolean
+
+
+'DEFINE DATA TABLES
+
+' COLLECT FLOW DATA ON MINUTELY INTERVAL
+' MINUTE
+DataTable (minute,1,-1)
+	DataInterval (0,1,Min,10)
+	Sample (1,PT_Level,IEEE4)
+	' Flowmeter
+	Sample (1,Level_950,IEEE4)
+	Median(1,Level_950,12,Float,False) '12 x 5 sec = 1min.  
+	Sample (1,Flow_950,IEEE4)
+	Sample (1,Flow_total_950,IEEE4)
+	Sample (1,Velocity_950,IEEE4)
+	Sample (1,rain_950,IEEE4)
+	Sample (1,Rain_increment,Float)
+EndTable
+
+' HOURLY
+DataTable (hourly,1,-1)
+	DataInterval (0,1,hr,10)
+	' DATA
+	Minimum (1,CR_BatVolts,FP2,False,False)
+	Sample (1,PT_Level,IEEE4)
+	Sample (1,Level_950,IEEE4)
+	Sample (1,Flow_950,IEEE4)
+	Sample (1,rain_950,FP2)
+	
+  ' COMS (record failures)
+	Sample (1,COMS_fail_cntr,FP2)
+EndTable
+
+'Main Program
+BeginProg
+  ' Turn on switched battery terminal (powers up modem)
+	SW12(1)
+	' Communicate through RS-232 with Flowmeter (Sigma 950)
+	SerialOpen (ModbusCom1,19200,10,0,500)
+	site_name = "FAMOSA_MES"
+	Subject = Subject + site_name
+  Sampling_is_triggered = False
+
+	Scan (60,Sec,0,0)
+	  'Have bottle count outside of Do Loop so that the scan interval closes and records the bottle number, 
+    ' and then have it ready to be recorded in the CallTable command
+    
+    ' Calculate minutely rain increment
+    Rain_increment = rain_950 - rain_950_previous
+    Rain_increment = Round(Rain_increment, 2)
+    rain_950_previous = rain_950 ' store rain_950 for the next minute interval
+    
+    ' Measure Datalogger temperature and battery volts
+		PanelTemp (CR_Temp,250)
+		
+    'Battery check and email Alert
+		Battery (CR_BatVolts) 
+    
+    ' Low Battery Alarm
+    If CR_BatVolts <= 11.8 AND BattAlarmIsOn = False Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "Low battery alarm! "+ CRLF
+    	Message = Message + "Currently: " + Round(CR_BatVolts,2) + " V " + CRLF 
+    	Message = Message + "Datalogger time: " + Status.Timestamp
+    	' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  BattEmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+    	EndIf
+      If BattEmailSuccess = -1 Then
+      	BattAlarmIsOn = True
+      	BattEmailSuccess = 1
+      EndIf
+    EndIf
+    
+    ' Level Alarm
+    If Sampling_is_triggered = True AND LevelAlarmIsOn = False Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "Water Level alarm! "+ CRLF 
+    	Message = Message + "Currently: " + Round(Level_950,2) + " in" + CRLF 
+    	Message = Message + "Datalogger time: " + Status.Timestamp
+    	' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  LevelEmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+    	EndIf
+      If LevelEmailSuccess = -1 Then
+      	LevelAlarmIsOn = True
+      	LevelEmailSuccess = 1
+      EndIf
+    EndIf
+    
+    If TestEmailNotification = True Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "This is just a test..."+ CRLF
+      ' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  TestEmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+    	EndIf
+      If TestEmailSuccess = -1 Then
+      	TestEmailNotification = False ' Turn off the notifier if successful
+      	TestEmailSuccess = 1
+      EndIf
+    EndIf
+
+    'CALL OUTPUT TABLES at least every minute
+  	CallTable minute
+  	CallTable hourly
+    
+  NextScan
+  
+  ' Set Scan interval for Pulse Counting (Shorter so update Flowmeter values more often)
+  SlowSequence
+	Scan (15,Sec,0,0)
+    ' Read Pressure transducer
+    VoltDiff(PT_Level_raw,1,mV2500,1,False,0,_60Hz,0.01875,-7.5)
+    PT_Level = PT_Level_raw + PT_Level_offset
+
+		' Open Serial connection to Flowmeter, delay to let it connect
+		SerialOpen (ModbusCom1,19200,10,0,500)
+		Delay (1,250,mSec)
+		'------------------------------------------------------
+		'Hach 950 - connected to CS105 w/SDC7 address
+		'measure Hach 950 flowmeter - log current flow rate, total flow, time/date
+		'voltage, etc. @ 5-sec intervals, log @ 1-minute intervals
+	
+		' BATT VOLTS
+		ModbusMaster (COMS_result,ModbusCom1,19200,1,3,Battery_950,39,1,3,250,10)
+		If COMS_result > 0 Then COMS_fail_cntr += 1
+		
+		' LEVEL
+		ModbusMaster (result,ModbusCom1,19200,1,3,Level_950,7,1,3,250,10)
+		
+    'velocity
+		ModbusMaster (result,ModbusCom1,19200,1,3,Velocity_950,9,1,3,250,10)
+  
+		' FLOW
+		ModbusMaster (result,ModbusCom1,19200,1,3,Flow_950,33,1,3,250,10)
+		
+		' TOTAL FLOW
+		ModbusMaster (result,ModbusCom1,19200,1,3,Flow_total_950,75,1,3,250,10)
+		
+		' RAIN
+		ModbusMaster (result,ModbusCom1,19200,1,3,rain_950,3,1,3,250,10)
+    
+    ' Every 15 Sec scan for Level_Trigger: if TRUE, (AND SampleOn is on, then send pulse to Autosampler
+    '                                     if FALSE, don't do anything
+  	'---------------------------------------------------------------------------
+  	'Hach SD900 Autosampler - trigger sample, log success/non-success, log bottle number
+    'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at time intervals once FlowTrigger is reached
+
+    
+    ' If Level_950 is above LevelTrigger, and sampling is not already started, then start Sampling
+    ' This triggers the first sample, and resets the sample interval counter so that sampling commences
+    If minute.Level_950_Med(1,1) >= Sample_LevelTrigger AND Sampling_is_triggered = False Then 
+      Sampling_is_triggered = True
+      
+    EndIf		
+    
+    ' RESETS
+    If Event_reset Then
+      Event_reset = false
+      Coms_results_reset = true
+      
+      LevelAlarmIsOn = False
+      Sampling_is_triggered = false
+      
+      'Event data
+      Rain_increment = 0.0
+      rain_950_previous = rain_950
+    EndIf
+    
+    If Coms_results_reset Then
+      Coms_results_reset = false
+      COMS_fail_cntr = 0
+
+    EndIf    
+ 
+
+    If master_reset Then
+      master_reset = false
+      Sampling_is_triggered = false
+      ' Coms stuff
+      COMS_fail_cntr = 0
+      
+      'Event data
+      Rain_increment = 0
+      rain_950_previous = rain_950
+      
+    EndIf 
+    
+    NextScan
+ 
+EndProg
+

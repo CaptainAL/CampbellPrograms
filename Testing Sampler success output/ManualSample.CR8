@@ -1,0 +1,325 @@
+'CR800 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date:
+'program author:
+
+'Declare Constants
+'Example:
+'CONST PI = 3.141592654 or Const PI = 4*ATN(1)
+
+'Declare Public Variables
+Public PTemp, BatVolts
+Units BatVolts = volts
+Units PTemp = degC
+
+'Declare Other Variables
+Public sampleOn As Boolean
+Public pulses_sent_to_sampler As Long
+' Bottle/Success Stuff
+Public Bottle As Float
+Public Per As Float
+Public AvgPer As Float
+
+Public High_Low_pin As Float
+'Public Pulse_pin As Float
+Public PinHIGH As Boolean
+Public PinHIGH_count As Float
+Public Pumping As Boolean
+Public Pumping_highvolts = 42
+Public Pumping_lowvolts = 35
+
+Public High As Float
+Public Low As Float
+
+'Load Cell
+Public LC_mV As Float 'millivolts. Raw mV reading from the load sell
+Public LC_mV_Avg As Float 'millivolts. Averaged raw mV reading from the load cell
+Public Lc_mV_Ofst As Float 'millivolts. Load cell mV offset with no load (TARE)
+Public LC_mV_Diff As Float 'millivolts. Absolute difference betwee0n LC_mV_Avg and LC_mV
+Public mVtoGram As Float 'grams/millivolts. Conversion factor; Can be calibrated or Input directly
+Public LC_gr  As Float 'grams. weight applied to load cell
+Units LC_mV=mV
+Units Lc_mV_Ofst=mV
+Units LC_mV_Avg=mV
+Units LC_gr=gr
+'Sample Volume
+Public reset_sampling As Boolean
+Public SampleVol As Float
+Public SampleVol_start As Float
+Public SampleVol_end As Float
+Public SampleVol_tot As Float
+Public SampleVol_tot_count As Float
+Units SampleVol = mL
+Units SampleVol_start = mL
+Units SampleVol_end = mL
+Units SampleVol_tot = mL
+
+'TARE/CALIBRATE stuff
+Public TareNOW As Boolean 
+Public TareGauge As String * 32
+
+Public CalibrateNOW As Boolean 
+Public TriggerCalibration As String * 32
+Public CalWeight_Vol  'Weight in Grams of Calibration weight used.
+Public Cal_Result As String * 32
+
+'Define Data Tables
+DataTable (Sample_History,1,1000)
+  'DataInterval(0,120,Sec,10)
+  Minimum (1,BatVolts,FP2,False,False)
+	Sample (1,PTemp,FP2)
+  Sample(1,pulses_sent_to_sampler,Long)
+  Sample (1,Bottle,FP2)
+  Sample (1,LC_gr,Float)
+  Sample (1,SampleVol_start,float)
+  Sample (1,SampleVol_end,Float)
+  Sample (1,SampleVol,Float)
+  Sample (1,SampleVol_tot,Float)
+  'Maximum(1,AvgPer,Float,False,False)
+EndTable
+
+DataTable (Sample_Weight,1,1000)
+  DataInterval(0,1,Sec,10)
+  Sample (1,LC_gr,Float)
+  'Maximum(1,AvgPer,Float,False,False)
+EndTable
+
+DataTable (CalData,1,5000)'Table used to record calibration data
+  Sample(1,Cal_Result,String)
+  Sample(1,mVtoGram,IEEE4)
+  Sample(1,Lc_mV_Ofst,IEEE4)
+  Sample (1,LC_gr,IEEE4)
+  Sample(1,CalWeight_Vol,IEEE4)
+EndTable
+
+'Main Program
+PreserveVariables 
+
+BeginProg
+  'SW12 (1)
+  
+  'If an old offset exists in a prior datarecord, then it will be loaded. Otherwise,
+  'a default value of -0.260829 will be loaded.
+  Lc_mV_Ofst = CalData.Lc_mV_Ofst(1,1)
+  If Lc_mV_Ofst = NaN Then
+    Lc_mV_Ofst = 0.0
+  EndIf
+  Bottle =1
+  
+  mVtoGram = 10000
+  TareGauge = "Ready"
+  TriggerCalibration = "Tare before Cal"
+  sampleOn = False
+  TareNOW = False
+  CalibrateNOW = False
+  
+  reset_sampling = False
+  SampleVol = 0 
+  SampleVol_start = 0 
+  SampleVol_end = 0
+  SampleVol_tot = 0
+
+  Scan(120,Sec,0,0)
+    PanelTemp (PTemp,250)
+    Battery (BatVolts)
+
+    'Delay(0,sample_Time_interval,2)
+    'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at accumulation of 1000L
+    If sampleOn Then
+       CallTable Sample_History   
+      ' Get weight before pumping
+       SampleVol_tot_count = 0
+       SampleVol = 0
+       SampleVol_start = LC_gr
+       SampleVol_end = SampleVol_start
+      
+      'Send pulse by turning Port on
+       PortSet(1,1)
+       'keep sending pulse for 500mSec
+       Delay (1,500,mSec)
+       'Turn Port off
+       PortSet (1,0)
+       'Count up for attempted events
+       pulses_sent_to_sampler += 1
+
+       'On pulse pin we'll count intervals of the SubScan where Voltage is high/low      
+       High = 0
+       Low  = 0
+     
+       'Pin F - Pulse_pin = Bottle Number
+       'counts
+       PulseCount (Bottle,1,1,0,0,1.0,0)
+       ' It counts the rise after the signal so count back one to remove
+       'Bottle -= 1 
+
+       'TimerIO(Timer_IO,1111,1000,60,sec) 
+       'Pin E - High/Low
+       AvgPer = AvgPer
+        
+     EndIf 
+  NextScan
+  
+  SlowSequence
+  Scan(1,Sec,0,0)
+    'Measure the frequency all the time
+    'PulseCount(Freq,1,1,,0,1,1.0,0)
+    PeriodAvg(Per,1,mV5000,3,2250,0,3,1000,1,0)  
+    'Calculate the running Avg so it can be reset and only measured if the High_Low_pin is HIGH
+    AvgRun(AvgPer,1,Per,3)
+    
+    'Measure load cell
+    BrFull (LC_mV,1,mV2_5,3,Vx1,1,2000,False , False ,0,_60Hz,1,0)
+    AvgRun(LC_mV_Avg,1,LC_mV,3) 'compute 3 sec running average
+    LC_mV_Diff = ABS(LC_mV_Avg - LC_mV)
+    
+    'Tare the raingage (measure electronics offset with no load). This displays as Step 1:
+    If TareNOW = True Then
+      TareGauge = "Tare Gauge"
+    ElseIf TareNOW = False AND TareGauge <> "Complete" Then
+      TareGauge = "Ready"
+    ElseIf TareNOW = False AND TareGauge = "Complete" Then
+      TareGauge = "Complete"
+    EndIf
+    
+    If TareGauge = "Tare Gauge" Then
+      If LC_mV_Diff < 0.001 Then
+        Lc_mV_Ofst=LC_mV_Avg
+        TareGauge = "Complete"
+        TareNOW = False
+        TriggerCalibration = "Ready"
+      Else
+        TareGauge = "Failed Equalizing"
+      EndIf
+    EndIf
+    
+    If TareGauge <> "Complete" AND TareGauge <> "In Progress" Then
+      If LC_mV_Diff > 0.001 AND TareGauge <> "Failed Equalizing" Then
+        TareGauge = "Equalizing"
+      ElseIf LC_mV_Diff <= 0.001 Then
+        TareGauge = "Ready"
+      EndIf
+    EndIf
+    
+    
+    'Calibrate the Load Cell with calibration weights/water (1gram = 1mL):
+    If CalibrateNOW = True Then
+      TriggerCalibration = "Cal In Progress"
+      Cal_Result = "In Progress"
+    EndIf
+    
+    If TareGauge = "Complete" AND CalibrateNOW Then
+      'tare is completed and in the middle of the calibration process
+      mVtoGram = CalWeight_Vol /(LC_mV_Avg - Lc_mV_Ofst) 'calculate mVtoGram multiplier
+      TriggerCalibration = "Cal Complete" 'note completion
+      Cal_Result = "Cal Success"
+      CallTable CalData'record the event
+      CalibrateNOW = False
+      
+    ElseIf TareGauge <> "Complete" AND CalibrateNow Then
+      'tare has NOT been completed and calibration process has been started
+      CalibrateNow = FALSE'stop calibration process
+      Cal_Result = "Cal Failed"'flagged as failed because we didn't tare first
+      CallTable CalData'record the event
+      TareGauge = "Ready"'prompt user to tare
+      TriggerCalibration = "Tare before Cal" 'prompt user to tare
+    EndIf
+
+    'Subtracts electronics offset and convert to grams 
+    'assuming 9.81 m/s2acceleration due to gravity.
+    LC_gr = (LC_mV_Avg-Lc_mV_Ofst) * mVtoGram
+    
+    CallTable Sample_Weight
+  Next Scan
+  
+  SlowSequence
+  Scan(100,mSec,0,0)
+    'high-low pin
+    VoltSe(High_Low_pin,1,mV5000,1,False,0,_60Hz,0.1,0.)
+    'SubScan(0,mSec,1)
+      'then pulse pin
+      'VoltSe(Pulse_pin,1,mV5000,3,False,0,_60Hz,0.1,0.)
+    'Next SubScan
+  NextScan
+  
+  SlowSequence
+    Do
+      If reset_sampling = True Then
+        SampleVol = 0 
+        SampleVol_start = 0 
+        SampleVol_end = 0
+        SampleVol_tot = 0
+        reset_sampling = False
+      EndIf
+      
+      'HIGH LOW PIN 
+      If High_Low_pin = NAN Then
+        PinHIGH = True
+        Pumping = False
+        
+        'Calculate sample weight since the sampling routine is now done
+        If SampleVol_tot_count = 0 Then
+          SampleVol_end = LC_gr 'weight after sampling
+          SampleVol = SampleVol_end - SampleVol_start 'weight at end of sampling - weight at beginning = weight of sampled water
+          SampleVol_tot = SampleVol_tot + SampleVol 'Add sample Volume to total sample Volume for running total
+          SampleVol_tot_count +=1
+        EndIf
+      ElseIf High_Low_pin < Pumping_lowvolts Then
+        PinHIGH = False
+        Pumping = False
+        High = 0
+      ElseIf High_Low_pin < Pumping_highvolts AND High_Low_pin > Pumping_lowvolts Then
+        PinHIGH = False
+        Pumping = True
+      EndIf
+      
+      'Start counting when High_Low pin goes HIGH
+      If PinHIGH = True Then
+        PinHIGH_count +=1
+      'Reset counter to 0 when High_Low pin goes LOW
+      ElseIf PinHIGH = False Then
+        PinHIGH_count = 0
+      EndIf
+      
+      'Reset Avg only right when High_Low pin goes HIGH
+      If PinHIGH_count = 1 Then
+        AvgRun(AvgPer,1,Per,2,True)
+      EndIf
+      
+      If AvgPer = NAN Then
+       AvgPer = 0
+      EndIf
+    Loop
+EndProg
+
+
+'old
+'PeriodAvg(SignalPeriod,1,mV250,3,2000,0,2,1000,1,0)  
+'VoltSe(Success,1,mV5000,3,False,0,_60Hz,1.0,0)  
+ 'PeriodAvg (Success,1,mV250,1,2000,0,2,1000,1.0,0)
+
+'
+''PULSE PIN
+'      
+
+'      EndIf
+'      If Pulse_pin > 450 Then
+'        High +=1
+'      ElseIf Pulse_pin <450 Then
+'        High = 0
+'        Low+=1
+'      EndIf
+
+'SubScan(1,mSec,4500)
+'  'pulse pin
+'  VoltSe(Success,1,mV5000,3,False,0,_60Hz,1.0,0)
+'  If Success = NAN Then
+'    High +=1
+'  EndIf
+'  
+'  If Success < 44 Then
+'    Low +=1
+'  EndIf  
+'Next SubScan
+
+

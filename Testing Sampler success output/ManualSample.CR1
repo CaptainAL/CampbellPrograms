@@ -1,0 +1,90 @@
+'CR800 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date:
+'program author:
+
+'Declare Constants
+'Example:
+'CONST PI = 3.141592654 or Const PI = 4*ATN(1)
+
+'Declare Public Variables
+Public PTemp, BatVolts
+Units BatVolts = volts
+Units PTemp = degC
+
+'Declare Other Variables
+Public sampleOn As Boolean
+Public pulses_sent_to_sampler As Long
+
+Public Bottle As Float
+Public Success As Float
+
+
+'Define Data Tables
+'DataTable (Samples,Successful_Smpl > 0.5,1000)
+DataTable (Sample_History,1,1000)
+  Minimum (1,BatVolts,FP2,False,False)
+	Sample (1,PTemp,FP2)
+  Sample(1,pulses_sent_to_sampler,Long)
+  Sample (1,Bottle,Float)
+  Sample (1,Success,Float)
+EndTable
+
+
+'Main Program
+BeginProg
+  'Get values to start at different numbers to make sense to Alex
+  'Pin E doesn't return a signal until the 3rd sample????
+  SW12(1)
+  Scan(60,Sec,0,0)
+    PanelTemp (PTemp,250)
+    Battery (BatVolts)
+    
+
+
+    'Delay(0,sample_Time_interval,2)
+    'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at accumulation of 1000L
+    If sampleOn Then
+      'Send pulse by turning Port on
+       PortSet(1,1)
+       'keep sending pulse for 500mSec
+       Delay (1,500,mSec)
+       'Turn Port off
+       PortSet (1,0)
+       'Count up for attempted events
+       pulses_sent_to_sampler += 1
+       'CallTable Sample_History
+       
+    
+      'When Pin E is high, wait 100 mSec, then count pulses every 100 mSec so you can see if there is 
+      
+  
+      'Pin F - Bottle Number
+      'counts
+      PulseCount (Bottle,1,1,0,0,1.0,0)
+      ' It counts the rise after the signal so count back one to remove
+      Bottle -= 1 
+      
+      'Pin E
+      'frequency
+      'PulseCount (Success,1,2,0,30,1.0,0)
+      'TimerIO(timer_io,1111,0200,30,1) Drops pin voltage so won't work
+      PeriodAvg (Success,1,mV250,1,0,0,2,1000,1.0,0)
+      
+  
+      
+      'PulseCount(Smpls_attempted,1,1,1,0,1.0,0)
+      'Smpls_attempted_Counter += Smpls_attempted
+      CallTable Sample_History
+    
+    
+  'NextScan
+
+  'SlowSequence
+  'Scan (30,Sec,0,0)
+
+     EndIf
+  NextScan
+EndProg
+

@@ -1,0 +1,90 @@
+Public Send As Boolean
+Public PTemp, batt_volt
+Public Addressees(10) As String *52 = {"7149153360@txt.att.net","alex.messina@woodplc.com"}
+
+Public MessageCount = 0
+Public TXEmailResult As String *50
+Public TXMessage As String *500
+Public EmailSent As Boolean
+
+Dim i
+Dim TXToAddr As String *530
+Dim ReadTime(9)
+Alias ReadTime(1) = RTYear
+Alias ReadTime(2) = RTMonth
+Alias ReadTime(3) = RTDOM
+Alias ReadTime(4) = RTHour
+Alias ReadTime(5) = RTMinute
+Dim TimeSt(12) As String *20 = {"0","0","0","0","0","0","0","0","0","0","0","0"}
+Dim Batt(12)
+Dim Temp(12)
+
+'Constant parameters
+Const TXServerAddr = "smtp.gmail.com:587" 'This is the address of the SMTP server you want to use to send the email
+Const TXFromAddr = "sebal.py@gmail.com" 'This is the email address that the recipient will see in the 'From'
+Const TXSubject = "Message From CR1000" 'This is the subject of the email you will be sending
+Const TXUserName = "sebal.py@gmail.com" 'This is the user name for the email account you will be sending the email from
+Const TXPassword = "Mactec101" 'This is the password for the email account you will be senging the email from
+Const CRLF = CHR(13)+CHR(10)
+Const QOT = CHR(34)
+
+'Main Program
+BeginProg
+   
+	Scan (1,Min,0,0) 'This means the program will have a main scan sequence that occurs every 5 minutes
+	  
+	  'Make Measurements
+		PanelTemp (PTemp,_60Hz) 'This tells the data logger to measure its internal temperature	
+		Battery (batt_volt) 'This tells the data logger to measure the voltage of the power source to which it is connected
+
+		'Every fifteen minutes, store current Temperature and Battery Voltage and construct on-demand message body
+		If TimeIntoInterval(0,1,Min) Then
+		  
+		   'Shift prior values (Time stamp increases with index)
+		   For i=1 To 11
+		     TimeSt(i) = TimeSt(i+1)
+		     Batt(i) = Batt(i+1)
+		     Temp(i) = Temp(i+1)
+		   Next i
+		   
+		   'Get current time
+		   RealTime(ReadTime)
+		   
+		   'Construct current time stamp in mm/dd/yyyy hh:mm format
+		   Sprintf(TimeSt(12),"%02.0f/%02.0f/%04.0f %02.0f:%02.0f",RTMonth,RTDom,RTYear,RTHour,INT(RTMinute+.01))
+
+       'Store Battery Voltage and Temperature
+       Batt(12) = batt_volt
+       Temp(12) = PTemp
+       
+       'Construct Message Body: CSV format with header record, then records of timestamp, battery voltage, and temperature
+       TXMessage = QOT & "Test Data" & QOT & CRLF
+		   TXMessage = TXMessage & QOT & "TimeStamp" & QOT & "," & QOT & "Battery" & QOT & "," & QOT & "Temperature" & QOT & CRLF
+		   For i=1 To 12
+		     TXMessage = TXMessage & QOT & TimeSt(i) & QOT & "," + INT(batt(i)*1000+0.5)/1000 & "," + INT(Temp(i)*1000+.5)/1000 & CRLF
+		   Next i
+		   
+		 EndIf
+		
+	NextScan
+
+	SlowSequence 'The slow sequence separates these instructions from the main scan.  The slow sequence cannot hold up the mail scan.
+	Scan (1,Sec,3,0) 'This means the slow sequence will occure every second
+	  'User sets the "Send" variable to true if data is desired in email/text message.
+		If Send Then 'If the variable send is equal to true then do the following.
+      'Create address string from non-blank addresses. Note: addresses don't have to be in contiguous array cells.
+		  TXToAddr = Addressees(1)
+		  For i=2 To 10
+		    If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+		  'Send email if any addresses are present.
+		  If TXToAddr<>"" then
+			  EmailSent = EMailSend (TXServerAddr,TXToAddr,TXFromAddr,TXSubject,TXMessage,"",TXUserName,TXPassword,TXEmailResult) ' This instruction tells the data logger to send an email using all the information from above.
+			  If EmailSent Then MessageCount = MessageCount + 1  'Count successful message
+			EndIf
+			Send = False 'After the email attempt ends, set Send back to false to prevent sending multiple messages
+		EndIf
+	NextScan
+
+EndProg
+

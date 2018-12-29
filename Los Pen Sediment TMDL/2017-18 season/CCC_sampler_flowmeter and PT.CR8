@@ -1,0 +1,363 @@
+'AMEC FOSTER WHEELER
+'Los Penasquitos Estuary Sediment TMDL Compliance monitoring
+
+'CR800 Series Datalogger
+'date: 12/8/2016
+'program author: Messina
+
+'Program objectives:
+'
+' Measure flow in cfs from Sigma 950 bubbler flowmeter
+' Measure rain in inches from rain gauge connected to Sigma 950
+' Trigger Hach SD900 Autosampler and receive success/non-success message
+
+'PreserveVariables
+
+'Declare Public Variables
+' Panel Temperature and Battery Voltage
+Public PTemp, BatVolts
+Units BatVolts = volts
+Units PTemp = degC
+
+' Data from Sigma 950 Flowmeter: Level(inches),Flow(cfs),TotalFlow(cf),Rain(inches)
+Const ModbusCom1 = ComSDC7 'Modbus Address
+
+' DECLARE DATA VARIABLES
+' Pressure transducer
+Public Level_raw
+Units Level_raw = inches
+Public Level_offset = 0.0
+Units Level_offset = inches
+Public Level As Float
+Units Level = inches
+Public PT_flow As Float
+Units PT_flow = cfs
+
+
+' FLOWMETER
+' Flowmeter data container (5 variables)
+Public modbusdata(5)
+' Battery
+Alias modbusdata(1) = Battery_950
+Units Battery_950 = volts
+' Water Level
+Alias modbusdata(2) = Level_950
+Units Level_950 = inches
+' Flow
+Alias modbusdata(3) = Flow_950
+Units Flow_950 = cfs
+' Total Flow
+Alias modbusdata(4) = Flow_total_950
+Units Flow_total_950 = cf
+' Rain
+Alias modbusdata(5) = rain_950
+Units rain_950 = inches
+
+' COMS FAILURES (For ModBus)
+' Battery
+Public battery_coms_result
+Public battery_coms_fail_cntr As Long
+' Water Level
+Public level_coms_result
+Public level_coms_fail_cntr As Long
+' Flow
+Public flow_coms_result
+Public flow_coms_fail_cntr As Long
+' Flow Total
+Public flow_tot_coms_result
+Public flow_tot_coms_fail_cntr As Long
+' Rain
+Public rain_950_coms_result
+Public rain_950_coms_fail_cntr As Long
+
+' AUTOSAMPLER
+'Turn on sampling 
+' ** it will still wait For a flow pulse which is sent programmatically)
+Public SampleOn As Boolean
+' Set FlowTrigger based on Flowmeter data
+Public LevelTrigger = 10
+Units LevelTrigger = inches
+Public Trigger_Sampler As Boolean
+' Send Pulse
+Public Send_Pulse As Boolean
+
+' Sample interval (e.g. 30min)
+Public Sample_Interval_minutes = 30
+Units Sample_Interval_minutes = Minutes 
+' in seconds
+Public Sample_Interval_seconds
+Units Sample_Interval_seconds = Seconds
+
+' Sample interval counter 
+Public Sample_Interval_counter = 0
+Units Sample_Interval_counter = Seconds
+' Countdown timer
+Public Seconds_to_next_Sample
+Units Seconds_to_next_Sample = Seconds
+Public Minutes_to_next_Sample
+Units Minutes_to_next_Sample = Minutes
+
+' Keep track of when the CR800 sends the pulse
+Public pulses_sent_to_sampler As Long
+' Measure Bottle Number and Success Pulse from sampler
+Public Bottle As Float
+Public Success As Float
+' Level and Flow at time of sample
+Public Level_at_Sample As Long
+Units Level_at_Sample = inches
+Public Flow_at_Sample As Long
+Units Flow_at_Sample = cfs
+
+
+' RESETS
+' Flowmeter resets
+Public Coms_results_reset As Boolean
+' Autosampler resets
+Public Sample_Interval_reset As Boolean
+' Master resets
+Public master_reset As Boolean
+
+
+
+'DEFINE DATA TABLES
+
+' COLLECT FLOW DATA ON MINUTELY INTERVAL
+' MINUTE
+DataTable (minute,1,-1)
+	DataInterval (0,1,Min,10)
+	' Pressure Transducer
+	Sample (1,Level,IEEE4)
+	Sample (1,PT_flow,IEEE4)
+	' Flowmeter
+	Sample (1,Level_950,IEEE4)
+	Sample (1,Flow_950,IEEE4)
+	Sample (1,Flow_total_950,IEEE4)
+	Sample (1,rain_950,IEEE4)
+EndTable
+
+' HOURLY
+DataTable (hourly,1,-1)
+	DataInterval (0,1,hr,10)
+	' DATA
+	Minimum (1,BatVolts,FP2,False,False)
+	Sample (1,Level,IEEE4)
+	Sample (1,PT_flow,IEEE4)
+	Sample (1,Level_950,IEEE4)
+	Sample (1,Flow_950,IEEE4)
+	Sample (1,rain_950,FP2)
+  ' COMS (record failures)
+	Sample (1,battery_coms_fail_cntr,FP2)
+	Sample (1,level_coms_fail_cntr,FP2)
+	Sample (1,flow_coms_fail_cntr,FP2)
+	Sample (1,flow_tot_coms_fail_cntr,FP2)
+	Sample (1,rain_950_coms_fail_cntr,FP2)
+EndTable
+
+' DAILY
+DataTable (daily,1,-1)
+	DataInterval (0,24,hr,10)
+	Minimum (1,BatVolts,FP2,False,False)
+	Sample (1,rain_950,IEEE4)
+EndTable
+
+' SAMPLE HISTORY (should be similar to Flowmeter readout)
+DataTable (Sample_History,1,1000)
+  DataInterval(0,30,Min,10)
+  ' Log pulses sent
+  Sample (1,pulses_sent_to_sampler,Long)
+  ' Log maximum and time of maximum
+  Maximum (1,pulses_sent_to_sampler,Long,0,1)
+  ' Log Bottle Number and Success
+  Sample (1,Bottle,Float)
+  Maximum (1,Bottle,Float,0,1)
+  Sample (1,Success,Float)
+  Maximum (1,Success,Float,0,1)
+EndTable
+
+' SAMPLE HISTORY (should be similar to Flowmeter readout)
+DataTable (TestSample_History,Send_Pulse,1000)
+  ' Flowmeter data
+  Sample (1,Level_at_Sample,Long)
+  Sample (1,Flow_at_Sample,Long)
+  ' Log pulses sent
+  Sample (1,pulses_sent_to_sampler,Long)
+  ' Log Bottle Number and Success
+  Sample (1,Bottle,Float)
+  Sample (1,Success,Float)
+EndTable
+
+
+'Main Program
+BeginProg
+  ' Turn on switched battery terminal (powers up modem)
+	SW12(1)
+	' Set countdown timer for first scan
+	Seconds_to_next_Sample = Sample_Interval_seconds
+	Minutes_to_next_Sample = Seconds_to_next_Sample / 60
+
+  ' Set Scan interval for Pulse Counting (Longer so capture the whole pulse signal)
+  ' Has to be main scan because of PulseCount
+	Scan (60,Sec,0,0)
+	  ' Measure Datalogger temperature and battery volts
+		PanelTemp (PTemp,250)
+		Battery (BatVolts)
+    
+    'Pin F - Bottle Number - counts
+    PulseCount (Bottle,1,1,0,0,1.0,0)
+    ' It counts the rise after the pulses so count back one to remove
+    If Bottle >= 2 Then Bottle -= 1 
+    
+    'Pin E - Sample Success - pulse length
+    PulseCount (Success,1,2,1,0,1.0,0)
+    
+  NextScan   
+  
+  
+  ' Countdown scan 
+  SlowSequence
+  Scan (1,Sec,0,0)
+    ' Calculate Sample Interval in seconds
+	  Sample_Interval_seconds = Sample_Interval_minutes * 60	  
+    ' count up to sample
+    Sample_Interval_counter += 1  
+    ' count down to sample
+    Seconds_to_next_Sample -= 1  
+    Minutes_to_next_Sample = Seconds_to_next_Sample/60
+  NextScan
+  
+  ' Set Scan interval for Querying Flowmeter (Shorter to update flow values more often)
+  SlowSequence
+	Scan (10,Sec,0,0)
+	  
+    ' Read Pressure transducer
+    VoltDiff(Level_raw,1,mV2500,1,False,0,_60Hz,0.0375,-15.0)
+    Level = Level_raw + Level_offset
+    'PT_flow = (0.631 * (Level_raw^2)) + (10.664* Level_raw) - 29.775
+    PT_flow = (0.631 * (Level^2)) + (10.664 * Level) -29.775
+    
+
+		' Open Serial connection to Flowmeter, delay to let it connect
+		SerialOpen (ComSDC7,19200,10,0,500)
+		Delay (1,500,mSec) 'pushed to 500mSec to give it more time
+		'Hach 950 - connected to CS105 w/SDC7 address
+		'measure Hach 950 flowmeter - log current flow rate, total flow, time/date
+		'voltage, etc. @ 5-sec intervals, log @ 1-minute intervals
+		
+    '------------------------------------------------------
+		' LEVEL
+		ModbusMaster (level_coms_result,ModbusCom1,19200,1,3,Level_950,7,1,3,250,10)
+		If level_coms_result > 0 Then level_coms_fail_cntr  += 1
+    ' If Level_950 is above LevelTrigger, set Trigger_Sampler to True
+    If Level_950 >= LevelTrigger Then Trigger_Sampler = TRUE
+    'If Level_950 < LevelTrigger Then Trigger_Sampler = FALSE
+    '------------------------------------------------------
+
+		' BATT VOLTS
+		ModbusMaster (battery_coms_result,ModbusCom1,19200,1,3,Battery_950,39,1,3,250,10)
+		If battery_coms_result > 0 Then battery_coms_fail_cntr += 1
+
+		' FLOW
+		ModbusMaster (flow_coms_result,ModbusCom1,19200,1,3,Flow_950,33,1,3,250,10)
+		If flow_coms_result > 0 Then flow_coms_fail_cntr += 1
+
+		' TOTAL FLOW
+		ModbusMaster (flow_tot_coms_result,ModbusCom1,19200,1,3,Flow_total_950,75,1,3,250,10)
+		If flow_tot_coms_result > 0 Then flow_tot_coms_fail_cntr += 1
+		
+		' RAIN
+		ModbusMaster (rain_950_coms_result,ModbusCom1,19200,1,3,rain_950,3,1,3,250,10)
+		If rain_950_coms_result > 0 Then rain_950_coms_fail_cntr += 1
+    
+
+    ' Every 10 Sec scan for Level_Trigger: if TRUE, (AND SampleOn is on, then send pulse to Autosampler
+    '                                     if FALSE, don't do anything
+  	'---------------------------------------------------------------------------
+  	'Hach SD900 Autosampler - trigger sample, log success/non-success, log bottle number
+    'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at time intervals once FlowTrigger is reached
+    
+
+
+    If Sample_Interval_counter >= Sample_Interval_seconds Then
+      ' Reset Sample Interval counter to zero
+      Sample_Interval_counter = 0
+      ' Set countdown to interval
+      Seconds_to_next_Sample = Sample_Interval_seconds
+      Minutes_to_next_Sample = Seconds_to_next_Sample / 60
+      
+      ' Conditional to trigger sampler
+      If SampleOn = TRUE Then 
+        If Trigger_Sampler = TRUE Then
+          ' Set Send_Pulse to True to call Sample_History table
+          Send_Pulse = True
+
+          'Send pulse by turning Port on
+          PortSet(1,1)
+          'keep sending pulse for 500mSec
+          Delay (1,500,mSec)
+          'Turn Port off
+          PortSet (1,0)
+    
+          'Count up for attempted events
+          pulses_sent_to_sampler += 1
+          ' Record Level and Flow at time of sample
+          Level_at_Sample = Level_950
+          Flow_at_Sample = Flow_950
+          CallTable(TestSample_History)
+          'reset Send_Pulse to false so Sample_History table isn't recorded
+          Send_Pulse = false
+        
+        EndIf
+      EndIf
+    EndIf		
+	NextScan
+	
+  SlowSequence
+  Scan(10,Sec,0,0)
+    ' RESETS
+    If Coms_results_reset Then
+      Coms_results_reset = false
+      battery_coms_fail_cntr = 0
+      level_coms_fail_cntr = 0
+      flow_coms_fail_cntr = 0
+      flow_tot_coms_fail_cntr = 0
+      rain_950_coms_fail_cntr = 0
+    EndIf    
+
+    If Sample_Interval_reset Then
+      Sample_Interval_reset = false
+      Sample_Interval_minutes = 30
+      Sample_Interval_seconds = 30*60
+      Seconds_to_next_Sample = Sample_Interval_seconds
+      Minutes_to_next_Sample = Sample_Interval_minutes 
+    EndIf   
+
+    If master_reset Then
+      master_Reset = false
+      ' Sample Interval stuff
+      Sample_Interval_reset = True
+      ' Sampler stuff
+      SampleOn = false
+      Trigger_Sampler = false
+      pulses_sent_to_sampler = 0 
+      ' Coms stuff
+      battery_coms_fail_cntr = 0
+      level_coms_fail_cntr = 0
+      flow_coms_fail_cntr = 0
+      flow_tot_coms_fail_cntr = 0
+      rain_950_coms_fail_cntr = 0
+    EndIf
+	NextScan
+	
+  ' Table Outputs
+  SlowSequence
+	Scan (60,Sec,0,0)
+    'CALL OUTPUT TABLES at least every minute
+    CallTable Sample_History
+  	CallTable minute
+  	CallTable hourly
+  	CallTable daily
+  NextScan
+
+ 
+EndProg
+

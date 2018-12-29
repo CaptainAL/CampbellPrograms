@@ -1,0 +1,311 @@
+'AMEC FOSTER WHEELER
+'MURDS Monitoring
+
+'CR800 Series Datalogger
+'date: 10/12/2017
+'program author: Messina
+
+'Program objectives:
+'
+' Measure flow in cfs from Sigma 950 bubbler flowmeter
+' Measure rain in inches from rain gauge connected to Sigma 950
+' Measure Turbidity from CampbellSci OBS-501
+' Measure Conductivity from CampbellSci probe
+
+'PreserveVariables
+
+'Declare Public Variables
+' Panel Temperature and Battery Voltage
+Public PTemp, BatVolts
+Units BatVolts = volts
+Units PTemp = degF
+
+' Data from Sigma 950 Flowmeter: Level(inches),Flow(cfs),TotalFlow(cf),Rain(inches)
+Const ModbusCom1 = ComSDC7 'Modbus Address
+
+' DECLARE DATA VARIABLES
+' Turbidimeter
+Public Turb_ON As Boolean
+Public OBS501(10)
+
+Alias OBS501(1)=Turb_BS_med
+Alias OBS501(2)=Turb_BS_mean
+Alias OBS501(3)=Turb_BS_std
+Alias OBS501(4)=Turb_BS_min
+Alias OBS501(5)=Turb_BS_max
+Alias OBS501(6)=Turb_SS_med
+Alias OBS501(7)=Turb_SS_mean
+Alias OBS501(8)=Turb_SS_std
+Alias OBS501(9)=Turb_SS_min
+Alias OBS501(10)=Turb_SS_max
+
+Units Turb_BS_med=FBU
+Units Turb_BS_mean=FBU
+Units Turb_BS_std=FBU
+Units Turb_BS_min=FBU
+Units Turb_BS_max=FBU
+
+Units Turb_SS_med=FNU
+Units Turb_SS_mean=FNU
+Units Turb_SS_std=FNU
+Units Turb_SS_min=FNU
+Units Turb_SS_max=FNU
+
+
+' Conductivity
+Public Rcable, Rp, CellConstant, TempCoef, OneOvrRs
+Public Cond
+Public Rs, Ct
+Public Temp_C
+Public TDS
+
+Units Cond=milliSiemens/cm
+Units Ct=milliSiemens/cm
+Units Temp_C=Deg C
+Units TDS =mg/L
+
+
+' FLOWMETER
+' Flowmeter data container (5 variables)
+Public modbusdata(5)
+' Battery
+Alias modbusdata(1) = Battery_950
+Units Battery_950 = volts
+' Water Level
+Alias modbusdata(2) = Level_950
+Units Level_950 = inches
+' Flow
+Alias modbusdata(3) = Flow_950
+Units Flow_950 = cfs
+' Total Flow
+Alias modbusdata(4) = Flow_total_950
+Units Flow_total_950 = cf
+' Rain
+Alias modbusdata(5) = rain_950
+Units rain_950 = inches
+
+' COMS FAILURES (For ModBus)
+' Battery
+Public battery_coms_result
+Public battery_coms_fail_cntr As Long
+' Water Level
+Public level_950_coms_result
+Public level_950_coms_fail_cntr As Long
+' Flow
+Public flow_coms_result
+Public flow_coms_fail_cntr As Long
+' Flow Total
+Public flow_tot_coms_result
+Public flow_tot_coms_fail_cntr As Long
+' Rain
+Public rain_950_coms_result
+Public rain_950_coms_fail_cntr As Long
+
+
+' RESETS
+' Flowmeter resets
+Public Coms_results_reset As Boolean
+' Master resets
+Public master_reset As Boolean
+
+
+
+'DEFINE DATA TABLES
+
+' COLLECT FLOW DATA ON MINUTELY INTERVAL
+' MINUTE
+DataTable (minute,1,-1)
+	DataInterval (0,5,Min,10)
+	' Turbidimeter
+	Sample(1,Turb_BS_med,FP2)
+	Sample(1,Turb_BS_mean,FP2)
+	Sample(1,Turb_BS_std,FP2)
+	Sample(1,Turb_BS_min,FP2)
+	Sample(1,Turb_BS_max,FP2)
+	
+	Sample(1,Turb_SS_med,FP2)
+	Sample(1,Turb_SS_mean,FP2)
+	Sample(1,Turb_SS_std,FP2)
+	Sample(1,Turb_SS_min,FP2)
+	Sample(1,Turb_SS_max,FP2)
+
+  ' Conductivity
+  Sample(1,Cond,FP2)
+	Sample(1,Ct,IEEE4)
+	Sample(1,Temp_C,FP2)
+	' Flowmeter
+	Sample (1,Level_950,IEEE4)
+	Sample (1,Flow_950,IEEE4)
+	Sample (1,Flow_total_950,IEEE4)
+	Sample (1,rain_950,IEEE4)
+EndTable
+
+' HOURLY
+DataTable (hourly,1,-1)
+	DataInterval (0,1,hr,10)
+	' DATA
+	Minimum (1,BatVolts,FP2,False,False)
+	Sample (1,Level_950,IEEE4)
+	Sample (1,Flow_950,IEEE4)
+	Sample (1,rain_950,FP2)
+  ' COMS (record failures)
+	Sample (1,battery_coms_fail_cntr,FP2)
+	Sample (1,level_950_coms_fail_cntr,FP2)
+	Sample (1,flow_coms_fail_cntr,FP2)
+	Sample (1,flow_tot_coms_fail_cntr,FP2)
+	Sample (1,rain_950_coms_fail_cntr,FP2)
+EndTable
+
+' DAILY
+DataTable (daily,1,-1)
+	DataInterval (0,24,hr,10)
+	Minimum (1,BatVolts,FP2,False,False)
+	Sample (1,rain_950,IEEE4)
+EndTable
+
+'Main Program
+BeginProg
+  ' Turn on switched battery terminal (powers up modem)
+	SW12(1)
+
+  ' Set Scan interval for Pulse Counting (Longer so capture the whole pulse signal)
+  ' Has to be main scan because of PulseCount
+	Scan (300,Sec,0,0)
+	  ' Measure Datalogger temperature and battery volts
+		PanelTemp (PTemp,250)
+		Battery (BatVolts)
+    
+    'OBS500/OBS501 Smart Turbidity Meter (SDI-12) measurements 'Turb_BS', 'Turb_SS', 'Temp_C', and 'WD_OBS'
+    If Turb_ON = True Then
+		  SDI12Recorder(OBS501(),3,"0","C1!",1,0)
+		EndIf
+  NextScan   
+  
+
+  
+  ' Set Scan interval for Querying Flowmeter (Shorter to update flow values more often)
+  SlowSequence
+	Scan (10,Sec,0,0) 		
+    'CS547A Conductivity and Temperature Probe measurements 'Cond', 'Ct', and 'Temp_C'
+    Rcable = 30
+    CellConstant = 1.545
+    TempCoef = 1.97    
+
+
+		'Make preliminary voltage measurement
+		BrFull(Rs,1,mV2500,1,VX1,1,2500,True,True,0,250,-0.001,1)
+		'Convert voltage measurement to resistance
+		Rs= 1 * Rs/(1.0-Rs)
+		'Make refined voltage measurement based on preliminary measurement
+		Select Case Rs
+			Case Is <1.8
+				BrHalf(Rs,1,mV2500,2,VX1,1,2500,True,0,250,1,0)
+				Rs = Rs/(1-Rs)
+			Case Is <9.25
+				BrFull(Rs,1,mV2500,1,VX1,1,2500,True,True,0,250,-0.001,1)
+				Rs = Rs/(1-Rs)
+			Case Is <280
+				BrFull(Rs,1,mV250,1,VX1,1,2500,True,True,0,250,-0.001,1)
+				Rs = Rs/(1-Rs)
+		EndSelect
+		
+
+		'Convert voltage measurement to resistance
+		'Rs=Rs/(1-Rs)
+		
+    Rp = -Rcable * (0.000032) - 0.005
+		'Subtract resistance errors
+		Rs=Rs + Rp
+		'Calculate EC
+    OneOvrRs = 1/ Rs		
+		Ct=OneOvrRs * CellConstant
+		'Correct EC for ionization errors
+		If Ct<0.474 Then
+			Ct=Ct*0.95031-0.00378
+		Else
+			Ct=-0.02889+(0.98614*Ct)+(0.02846*Ct^2)
+		EndIf
+		'Make temperature measurement (Deg C)
+		Therm107(Temp_C,1,3,VX2,0,250,1,0)
+		'Correct EC for temperature errors
+		Cond = (Ct *100)/(((Temp_C - 25) * TempCoef) + 100)
+		'Cond=(Ct*100)/((Temp_C-25)*0+100)
+		'Trap measurements below 0.005 mS/cm threshold
+		If Cond<0.005 Then Cond=0.005
+		
+    ' TDS, reference USGS Water Supply Paper 1473
+    TDS = Cond * 500.0
+
+   
+
+		' Open Serial connection to Flowmeter, delay to let it connect
+		SerialOpen (ComSDC7,19200,10,0,500)
+		Delay (1,500,mSec) 'pushed to 500mSec to give it more time
+		'Hach 950 - connected to CS105 w/SDC7 address
+		'measure Hach 950 flowmeter - log current flow rate, total flow, time/date
+		'voltage, etc. @ 5-sec intervals, log @ 1-minute intervals
+		
+    ' BATT VOLTS
+		ModbusMaster (battery_coms_result,ModbusCom1,19200,1,3,Battery_950,39,1,3,250,10)
+		If battery_coms_result > 0 Then battery_coms_fail_cntr += 1
+		
+    'Level
+		ModbusMaster (level_950_coms_result,ModbusCom1,19200,1,3,Level_950,7,1,3,250,10)
+		If level_950_coms_result > 0 Then level_950_coms_fail_cntr  += 1
+
+		' FLOW
+		ModbusMaster (flow_coms_result,ModbusCom1,19200,1,3,Flow_950,33,1,3,250,10)
+		If flow_coms_result > 0 Then flow_coms_fail_cntr += 1
+
+		' TOTAL FLOW
+		ModbusMaster (flow_tot_coms_result,ModbusCom1,19200,1,3,Flow_total_950,75,1,3,250,10)
+		If flow_tot_coms_result > 0 Then flow_tot_coms_fail_cntr += 1
+		
+		' RAIN
+		ModbusMaster (rain_950_coms_result,ModbusCom1,19200,1,3,rain_950,3,1,3,250,10)
+		If rain_950_coms_result > 0 Then rain_950_coms_fail_cntr += 1
+    
+
+    ' Every 10 Sec scan for Level_Trigger: if TRUE, (AND SampleOn is on, then send pulse to Autosampler
+    '                                     if FALSE, don't do anything
+  	'---------------------------------------------------------------------------
+  	'Hach SD900 Autosampler - trigger sample, log success/non-success, log bottle number
+    'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at time intervals once FlowTrigger is reached
+    	
+	NextScan
+	
+  SlowSequence
+  Scan(10,Sec,0,0)
+    ' RESETS
+    If Coms_results_reset Then
+      Coms_results_reset = false
+      battery_coms_fail_cntr = 0
+      level_950_coms_fail_cntr = 0
+      flow_coms_fail_cntr = 0
+      flow_tot_coms_fail_cntr = 0
+      rain_950_coms_fail_cntr = 0
+    EndIf    
+
+    If master_reset Then
+      master_reset = false
+      ' Coms stuff
+      battery_coms_fail_cntr = 0
+      level_950_coms_fail_cntr = 0
+      flow_coms_fail_cntr = 0
+      flow_tot_coms_fail_cntr = 0
+      rain_950_coms_fail_cntr = 0
+    EndIf
+	NextScan
+	
+  ' Table Outputs
+  SlowSequence
+	Scan (60,Sec,0,0)
+    'CALL OUTPUT TABLES at least every minute
+  	CallTable minute
+  	CallTable hourly
+  	CallTable daily
+  NextScan
+
+ 
+EndProg
+

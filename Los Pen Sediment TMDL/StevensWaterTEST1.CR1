@@ -1,0 +1,81 @@
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date:
+'program author:
+
+'Declare Public Variables
+'Example:
+Public PTemp, batt_volt
+Public Level_raw
+Units Level_raw = inches
+Public Level_offset = 0.0
+Units Level_offset = inches
+Public Level As Float
+Units Level = inches
+
+'Declare Other Variables
+Public Addressees(10) As String *52 = {"7149153360@txt.att.net","alex.messina@woodplc.com"}
+Public TXToAddr As String *530
+Dim i
+Const Subject="Email from Campbell Unit"
+Const CRLF = CHR(13)+CHR(10)
+Public AlarmIsOn As Boolean
+Public AlarmTrigger As Boolean
+Public Message As String * 250
+Public EmailSuccess
+Public ServerResponse As String * 50
+
+'Define Data Tables.
+DataTable (Test,1,-1) 'Set table size to # of records, or -1 to autoallocate.
+	DataInterval (0,10,Sec,10)
+	Minimum (1,batt_volt,FP2,False,False)
+	Sample (1,PTemp,FP2)
+EndTable
+
+'Main Program
+BeginProg
+	Scan (10,Sec,0,0)
+		PanelTemp (PTemp,250)
+		Battery (Batt_volt)
+		'Enter other measurement instructions
+		VoltDiff(Level_raw,1,mV2500,1,False,0,_60Hz,0.0375,-15.0)
+		Level = Level_raw + Level_offset
+		
+    ' Check if Level is above alarm limit, and if the Alarm has already been sent
+    ' and then set the trigger to true
+		If Level >= 2.0 AND AlarmIsOn = False Then
+		  AlarmTrigger = True
+		' If Level is above alarm but Alarm message as already been sent
+		' then set trigger to false so it doesn't keep sending emails
+		ElseIf  Level >= 2.0 AND AlarmIsOn = True Then
+		  AlarmTrigger = False
+		EndIf
+		
+    'Send email
+		'Set Alarm Trigger Manually
+		If AlarmTrigger = True Then
+			Message = "Hello!" + CRLF + CRLF
+			Message = Message + "This is an automatic email message from your friendly datalogger " + Status.StationName + ". "
+			Message = Message + "An alarm condition has been triggered. "
+			Message = Message + "The water level is " + Level + " inches." + CRLF + CRLF + CRLF
+			Message = Message + "Datalogger time is " + Status.Timestamp
+			
+      TXToAddr = Addressees(1)
+			For i=2 To 10
+		    If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+		  'Send email if any addresses are present.
+		  If TXToAddr<>"" Then
+			  EmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+			EndIf
+			AlarmTrigger=False
+			AlarmIsOn = True
+		EndIf
+		  
+
+		'Call Output Tables
+		CallTable Test
+	NextScan
+EndProg
+

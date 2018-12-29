@@ -1,0 +1,6 @@
+"TOA5","Carroll Canyon","CR800","39466","CR800.Std.29","CPU:SWM1000SP_Hach950_rev4.CR8","11767","sample_event"
+"TIMESTAMP","RECORD","Successful_Smpl","sample_pacing_volume","flowrate_at_smpl_event","SampleCounter_Tot","ModbusInterval"
+"TS","RN","","","","",""
+"","","Smp","Smp","Smp","Tot","Smp"
+"2016-12-15 21:31:40",0,139,3151,26.26179,139,1
+"2016-12-15 21:31:50",1,31,3151,26.26179,170,1

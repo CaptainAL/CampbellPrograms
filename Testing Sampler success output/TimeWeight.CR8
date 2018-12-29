@@ -1,0 +1,139 @@
+'CR800 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date:
+'program author:
+
+'Declare Constants
+'Example:
+'CONST PI = 3.141592654 or Const PI = 4*ATN(1)
+
+'Declare Public Variables
+PreserveVariables
+
+Public PTemp, BatVolts
+Units BatVolts = volts
+Units PTemp = degC
+
+'Flow data from Sigma 950 Flow meter
+Const ModbusCom = ComSDC7
+Public ModbusInterval As Long
+'Modbus data from Sigma 950
+Public modbusdata(4) As Float
+Alias modbusdata(1) = battery_950
+Alias modbusdata(2) = level_950
+Alias modbusdata(3) = flow_950
+Alias modbusdata(4) = flow_total_950
+'Units
+Units battery_950 = volts
+Units level_950 = inches
+Units flow_950 = cfs
+Units flow_total_950 = cf
+
+'Set sampling interval: e.g. 30min
+'Public sample_pacing_Time
+'Turn on/off sampling 
+'Public sampleOn As Boolean
+'Attempted vs. Successful samples
+'Public attempted_smpl_events As Long
+'Public attempted_smpl_events_reset As Boolean
+'Public Successful_Smpl As Long
+'Public sample_count_reset As Boolean
+
+
+'Define Data Tables
+'DataTable (sample_event,Successful_Smpl > 0.5,1000)
+'  Sample (1,Successful_Smpl,Long)
+'  Totalize (1,SampleCounter,FP2,False)
+'EndTable
+
+DataTable (minute,1,-1)
+  DataInterval (0,1,Min,10)
+  Minimum (1,BatVolts,FP2,False,False)
+  Sample (1,flow_950,IEEE4)
+  Sample (1,level_950,IEEE4)
+  Sample (1,flow_total_950,IEEE4)
+  Sample (1,battery_950,FP2)
+  'Sample (1,Successful_Smpl,UINT2)
+  'Sample (1,attempted_smpl_events,FP2)
+  Sample (1,ModbusInterval,UINT2)
+EndTable
+
+'Define Subroutines
+'Sub
+	'EnterSub instructions here
+'EndSub
+
+'Main Program
+BeginProg
+  SW12(1)
+  ModbusInterval = 1
+  SerialOpen (ComSDC7,19200,10,0,500)
+  
+	Scan (10,Sec,10,0)
+		PanelTemp (PTemp,250)
+		Battery (Batt_volt)
+		'Enter other measurement instructions
+		'Call Output Tables
+		'Example:
+		CallTable(minute)
+	NextScan
+	
+  SlowSequence
+  Scan (1,Min,5,0)
+
+    If ModbusInterval = 1 AND IfTime(0,1,min) Then execute = true
+    If ModbusInterval = 15 AND IfTime(0,15,min) Then execute = true
+    If ModbusInterval = 60 AND IfTime(0,60,min) Then execute = true
+    If ModbusInterval = 360 AND IfTime(0,360,min) Then execute = true
+    If ModbusInterval = 720 AND IfTime(0,720,min) Then execute = true
+    If ModbusInterval = 1440 AND IfTime(0,1,day) Then execute = true
+
+    If execute Then
+      execute = false
+      SerialOpen (ComSDC7,19200,10,0,500)
+      Delay (1,250,mSec)
+      'measure Hach 950 flowmeter - log flow, current flow rate, velocity, time/date
+      'voltage, etc. @ 1-minute intervals
+
+      'battery volts
+      ModbusMaster (battery_result,ModbusCom,19200,1,3,modbusdata(1),39,1,3,250,10)
+      'level
+      ModbusMaster (level_result,ModbusCom,19200,1,3,modbusdata(2),7,1,3,250,10)
+      'flow
+      ModbusMaster (flow_result,ModbusCom,19200,1,3,modbusdata(3),33,1,3,250,10)
+      If flow_result = 0 Then
+        event_flow += flow_950 * 60 * ModbusInterval
+
+        'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at accumulation of 1000L
+        If sampleOn Then
+          sample_totalized_volume += flow_950 * 60 * ModbusInterval
+          interim_flow_total += flow_950 * 60 * ModbusInterval
+          If interim_flow_total >= sample_pacing_volume AND sample_pacing_volume > 0 Then
+            PortSet(1,1)
+            Delay (1,500,mSec)
+            PortSet (1,0)
+            attempted_smpl_events += 1
+            flowrate_at_smpl_event = flow_950
+            interim_flow_total -= sample_pacing_volume
+          EndIf
+        EndIf
+      Else
+        flow_fail_cntr  += 1
+      EndIf
+
+      'total flow
+      ModbusMaster (flow_tot_result,ModbusCom,19200,1,3,modbusdata(4),75,1,3,250,10)
+      If flow_tot_result > 0 Then flow_tot_fail_cntr += 1
+
+      'total flow reset
+      If hach_flow_reset Then
+        modbusdata(4) = 0
+        ModbusMaster (flow_tot_reset_result,ModbusCom,19200,1,6,modbusdata(4),75,1,3,250,10)
+        hach_flow_reset = false
+      EndIf
+    EndIf
+
+    SerialClose (ComME)
+EndProg
+

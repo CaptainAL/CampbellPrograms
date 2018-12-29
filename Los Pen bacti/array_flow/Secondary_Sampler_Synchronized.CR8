@@ -1,0 +1,325 @@
+'WOOD.
+'Los Penasquitos Bacteria monitoring
+
+'CR800 SECONDARY Datalogger (Upstream)
+'date: 11/16/2018
+'program author: Messina
+
+'Program objectives:
+'
+' Measure flow in cfs from Sigma 950 bubbler flowmeter attached to PRIMARY
+' Trigger Hach SD900 Autosampler at varying flow-paced intervals
+
+'Declare Public Variables
+PreserveVariables
+' ALARMS
+' Low Battery Alarm
+Public BattEmailSuccess
+Public BattAlarmIsOn As Boolean
+
+' Test Alarm in field
+Public TestEmailNotification As Boolean
+Public TestEmailSuccess 
+
+'Email stuff
+Public Addressees(5) As String *52 = {"7149153360@txt.att.net","alex.messina@woodplc.com"}
+Public TXToAddr As String *530
+Dim i
+Public site_name As String * 20
+Public Subject As String = "Alarm from " 
+Const CRLF = CHR(13)+CHR(10)
+Public Message As String * 250
+Public ServerResponse As String * 50
+
+' Panel Temperature and Battery Voltage
+Public CR_Temp, CR_BatVolts
+Units CR_BatVolts = volts
+Units CR_Temp = degC
+
+' AUTOSAMPLER - Flow-Weighted
+'Flow pacing stuff
+Public flow_pace(5)
+'Manually turn on sampling 
+Alias flow_pace(1) = FlowSampleOn
+'Sampler control
+Alias flow_pace(2) = Send_pulse_FW
+'Flow pacing
+Dim ModbusInterval = 20 'Scan interval to multiply by cfs to get volume
+Alias flow_pace(3) = Sample_Pacing_volume
+'Dim Flow_volume_per_scan As Float
+Public FlowIncremental_cntr
+Public Flowrate_at_FW_smpl
+'Bottle tracking
+Public Bottle_Number
+Public Bottle_totalized_volume
+Public Bottle_totalized_aliquots
+Alias flow_pace(4) = Event_totalized_volume
+Public Event_totalized_aliquots As Long
+
+
+'Absolute UNITS
+Units Sample_Pacing_volume = cf
+Units FlowIncremental_cntr = cf
+Units Flowrate_at_FW_smpl =cfs
+Units Bottle_Number = bottles
+Units Bottle_totalized_volume = cf
+Units Bottle_totalized_aliquots = aliquots
+Units Event_totalized_volume = cf
+Units Event_totalized_aliquots = aliquots
+
+'RESETS
+Public Pacing_and_Bottle_change As Boolean
+Alias flow_pace(5) =  FW_Sampling_Event_reset
+Public master_reset As Boolean
+
+
+' Flowmeter Data from PRIMARY
+Public PRIMARY_STATION_IP As String = "166.140.100.65"
+Public PRIMARY_STATION_PB As Long = 3 'Pakbus address of PRIMARY STATION
+Public Handle As Long
+	
+Public modbusdata(5)
+' Battery
+Alias modbusdata(1) = Battery_950
+Units Battery_950 = volts
+' Water Level
+Alias modbusdata(2) = Level_950
+Units Level_950 = inches
+' Flow
+Alias modbusdata(3) = Flow_950
+Units Flow_950 = cfs
+' Total Flow
+Alias modbusdata(4) = Flow_total_950
+Units Flow_total_950 = cf
+' Rain
+Alias modbusdata(5) = rain_950
+Units rain_950 = inches
+
+' COMS FAILURES (For IP connection to PRIMARY Station)
+Public PRIMARY_COMS_result
+Public PRIMARY_COMS_fail_cntr As Long
+Dim result
+' Resets
+Public COMS_results_reset As Boolean
+
+
+'Define Data Tables
+
+' Flow-Weighted SAMPLE HISTORY
+DataTable (FW_Sample_History,1,-1)
+	Sample (1,Event_totalized_aliquots,Long)
+  Sample (1,Event_totalized_volume,Float)
+  Sample (1,Bottle_totalized_aliquots,Long)	
+  Sample (1,Bottle_totalized_volume,Float)
+	Sample (1,Bottle_Number,Long)      
+	Sample (1,Sample_Pacing_volume,Long)
+	Sample (1,Flowrate_at_FW_smpl,Float)
+EndTable
+
+' COLLECT FLOW DATA ON MINUTELY INTERVAL
+' MINUTE
+DataTable (minute,1,-1)
+	DataInterval (0,1,Min,10)
+  'Flowmeter Data from PRIMARY
+  Average (1,Level_950,Float,False)
+	Average (1,Flow_950,Float,False)
+	Sample (1,Flow_total_950,Float)
+	Sample (1,Battery_950,Float)
+	Sample (1,rain_950,Float)
+  'Sampler - FlowWeighted
+	Sample (1,Event_totalized_aliquots,Long)
+  Sample (1,Event_totalized_volume,Long)
+  Sample (1,Bottle_totalized_aliquots,Long)	
+  Sample (1,Bottle_totalized_volume,Long)  
+  Sample (1,FlowIncremental_cntr,Float)
+  Sample (1,Sample_Pacing_volume,Long)
+  'Coms Failures
+	Sample (1,PRIMARY_COMS_fail_cntr,FP2)
+EndTable
+
+' HOURLY
+DataTable (hourly,1,-1)
+	DataInterval (0,1,hr,10)
+	'Flowmeter Data from PRIMARY
+	Minimum (1,CR_BatVolts,FP2,False,False)	
+	Sample (1,rain_950,Float)
+	Totalize (1,Flow_950,Float,False)
+	'Sampler - FlowWeighted
+	Sample (1,Event_totalized_aliquots,Long)
+  Sample (1,Event_totalized_volume,Long)
+  Sample (1, Bottle_Number, Long)	
+	Sample (1,Sample_Pacing_volume,Long)
+  Sample (1,Bottle_totalized_aliquots,Long)	
+  Sample (1,Bottle_totalized_volume,Long)
+
+  'Coms Failures
+	Totalize (1,PRIMARY_COMS_fail_cntr,Long,False)
+EndTable
+
+
+'Main Program
+BeginProg
+  ' Turn on switched battery terminal (powers up modem if configured)
+	SW12(1)  
+	' Email stuff
+	site_name = "LPC_Secondary"
+	Subject = Subject + site_name
+	
+  ' Default set power up to Bottle_Number =1 
+  Bottle_Number = 1
+  FlowSampleOn = False
+  Send_pulse_FW = False
+  
+	Scan (60,Sec,10,0)
+	  
+	  
+	  
+		' Measure Datalogger temperature and battery volts
+		PanelTemp (CR_Temp,250)
+    'Battery check and email Alert
+		Battery (CR_BatVolts) 
+		
+    ' Low Battery Alarm
+    If CR_BatVolts <= 11.8 AND BattAlarmIsOn = False Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "Low battery alarm! "+ CRLF
+    	Message = Message + "Currently: " + Round(CR_BatVolts,2) + " V " + CRLF 
+    	Message = Message + "Datalogger time: " + Status.Timestamp
+    	' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  BattEmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+    	EndIf
+      If BattEmailSuccess = -1 Then
+      	BattAlarmIsOn = True
+      	BattEmailSuccess = 1
+      EndIf
+    EndIf
+    
+    If TestEmailNotification = True Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "This is just a test..."+ CRLF
+      ' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  TestEmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+    	EndIf
+      If TestEmailSuccess = -1 Then
+      	TestEmailNotification = False ' Turn off the notifier if successful
+      	TestEmailSuccess = 1
+      EndIf
+    EndIf
+
+		'CALL OUTPUT TABLES at least every minute
+		CallTable minute
+		CallTable hourly
+	NextScan
+  
+  SlowSequence
+  Scan(10,Sec,0,0)
+    ' Resets
+    If Coms_results_reset Then
+      Coms_results_reset = false
+      PRIMARY_COMS_fail_cntr = 0
+      PRIMARY_COMS_result = 0
+      result = 0
+    EndIf    
+
+		If Pacing_and_Bottle_change Then
+			Pacing_and_Bottle_change = false
+			Sample_Pacing_volume = 0 'won't send a pulse until the pacing is put in >0
+			Bottle_Number += 1
+			Bottle_totalized_volume = 0
+      Bottle_totalized_aliquots = 0
+		EndIf
+
+		If FW_Sampling_Event_reset Then
+			FW_Sampling_Event_reset = false
+			FlowSampleOn = False
+      Send_pulse_FW = False
+      Sample_Pacing_volume = 0
+			FlowIncremental_cntr = 0
+			Bottle_Number = 1
+			Bottle_totalized_volume = 0
+			Bottle_totalized_aliquots = 0
+			Event_totalized_volume = 0
+			Event_totalized_aliquots = 0
+		EndIf
+		
+		If master_reset Then
+			master_reset = false
+			Pacing_and_Bottle_change = false
+			FW_Sampling_Event_reset = false
+			' Sampling controls
+			FlowSampleOn = False
+			Send_pulse_FW = False
+			Sample_Pacing_volume = 0
+      'reset flow and bottle stats
+			FlowIncremental_cntr = 0
+			Bottle_Number = 1
+			Bottle_totalized_volume = 0
+			Bottle_totalized_aliquots = 0
+			Event_totalized_volume = 0
+			Event_totalized_aliquots = 0
+      'reset COMS
+			PRIMARY_COMS_fail_cntr = 0
+      PRIMARY_COMS_result = 0
+      result = 0
+		EndIf
+
+	NextScan
+
+	SlowSequence
+	Scan (20,Sec,3,0)
+		If IfTime (0,ModbusInterval,Sec) Then
+			'Flow from PRIMARY
+      TCPOpen (PRIMARY_STATION_IP,6785,0,5000,Handle,1) 'logger will create Handle name, then that goes into GetVariables, 5sec delay
+		  GetVariables (PRIMARY_COMS_result,Handle,-1,PRIMARY_STATION_PB,0000,0,"Public","Flow_950",Flow_950,1)) 
+		  GetVariables (result,Handle,-1,PRIMARY_STATION_PB,0000,0,"Public","flow_pace",flow_pace,5)) 
+		  'TCPClose(PRIMARY_STATION_IP)
+			
+			If PRIMARY_COMS_result = 0 Then
+        'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at accumulation of 1000L
+				If FlowSampleOn = True AND Send_pulse_FW = True Then		
+				  Send_pulse_FW = False
+				  
+				  ' Count the total volume towards total sample volume
+				  Bottle_totalized_volume += Sample_Pacing_volume
+
+					' Trigger sampler
+					PortSet(1,1)
+					Delay (1,500,mSec)
+					PortSet (1,0)
+					
+          ' Count up sample events
+					Bottle_totalized_aliquots += 1
+					Event_totalized_aliquots +=1
+					Flowrate_at_FW_smpl = Flow_950 'this stays in cfs because it is not being used in the calculation
+					
+          CallTable (FW_Sample_History)
+				EndIf
+			Else
+				PRIMARY_COMS_fail_cntr  += 1
+			EndIf
+			
+		EndIf
+	NextScan
+	
+  SlowSequence
+  Scan(360,min,3,0)
+    PakBusClock (3)
+  NextScan
+	
+EndProg
+
+

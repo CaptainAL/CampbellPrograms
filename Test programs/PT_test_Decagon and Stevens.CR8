@@ -1,0 +1,84 @@
+'AMEC FOSTER WHEELER
+'Los Penasquitos Estuary Sediment TMDL Compliance monitoring
+
+'CR800 Series Datalogger
+'date: 12/8/2016
+'program author: Messina
+
+'Program objectives:
+'
+' Measure flow in cfs from Sigma 950 bubbler flowmeter
+' Measure rain in inches from rain gauge connected to Sigma 950
+' Trigger Hach SD900 Autosampler and receive success/non-success message
+
+PreserveVariables
+
+'Declare Public Variables
+
+
+' PT data (if used)
+Public PT_Level_raw As Float
+Units PT_Level_raw = inches
+Public PT_Level_offset = 0.0
+Units PT_Level_offset = inches
+Public PT_Level As Float
+Units PT_Level = inches
+Public PT_flow As Float
+Units PT_flow = cfs
+
+' CTD
+Public CTD(3)
+Alias CTD(1) = CTD1
+Alias CTD(2) = CTD2
+Alias CTD(3) = CTD3
+
+
+
+'DEFINE DATA TABLES
+
+' COLLECT FLOW DATA ON MINUTELY INTERVAL
+' MINUTE
+DataTable (minute,1,-1)
+	DataInterval (0,1,Min,10)
+	' Pressure Transducer
+	Sample (1,PT_Level,IEEE4)
+	Sample (1,PT_flow,IEEE4)
+	' CTD
+	Sample (1,CTD1,IEEE4)
+	Sample (1,CTD2,IEEE4)
+	Sample (1,CTD3,IEEE4)
+
+EndTable
+
+
+'Main Program
+BeginProg
+	' Communicate through RS-232 with Flowmeter (Sigma 950)
+	SerialOpen (ComSDC7,19200,10,0,500)
+  
+  ' Set Scan interval for Pulse Counting (Longer so capture the whole pulse signal)
+  ' Has to be main scan because of PulseCount    
+
+	Scan (5,Sec,0,0)
+	  
+    ' Read Pressure transducer
+    VoltDiff(PT_Level_raw,1,mV2500,1,False,0,_60Hz,0.0375,-15.0)
+    PT_Level = PT_Level_raw + PT_Level_offset
+    'PT_flow = (0.631 * (Level_raw^2)) + (10.664* Level_raw) - 29.775
+    PT_flow = (0.631 * (PT_Level^2)) + (10.664 * PT_Level) -29.775
+    
+    ' CTD
+    
+    
+    'CALL OUTPUT TABLES at least every minute
+    CallTable minute
+	NextScan
+EndProg
+
+
+
+
+
+
+
+

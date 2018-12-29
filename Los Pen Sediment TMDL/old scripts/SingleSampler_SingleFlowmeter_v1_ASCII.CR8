@@ -1,0 +1,342 @@
+'CR800Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'rev 3 changed units to cf and cfs as needed
+'rev 4 variable elimination and name changes, commented out all rain
+'variables and calculations
+'
+' Measure flow in cfs from Sigma 950 bubbler flowmeter
+' Measure rain in inches from rain gauge connected to Sigma 950
+' Trigger Hach SD900 Autosampler and receive success/non-success message
+
+PreserveVariables
+'Declare Other Variables
+'Dim i
+
+' DATALOGGER
+' Panel Temperature and Battery Voltage
+Public PTemp,BatVolts
+Units BatVolts = volts
+Units PTemp = degC
+
+' Data from Sigma 950 Flowmeter: Level(inches),Flow(cfs),TotalFlow(cf),Rain(inches)
+Const ModbusCom1 = ComSDC7
+Const ModbusCom2 = ComSDC8
+
+' DECLARE DATA VARIABLES
+' FLOWMETER
+Public ModbusInterval As Long = 5
+Public modbusdata(5)
+' Battery
+Alias modbusdata(1) = Battery_950
+Units Battery_950 = volts
+' Water Level
+Alias modbusdata(2) = Level_950
+Units Level_950 = inches
+' Flow
+Alias modbusdata(3) = Flow_950
+Units Flow_950 = cfs
+' Total Flow
+Alias modbusdata(4) = Flow_total_950
+Units Flow_total_950 = cf
+' Calculated Event Flow
+Public Event_flow
+Units Event_flow = cf
+' Rain
+Alias modbusdata(5) = rain_950
+Units rain_950 = inches
+
+
+
+
+' AUTOSAMPLER
+Public SampleOn As Boolean
+'Grab sample
+'Const Param = 1000
+'Const Code = 2775
+Public ProgSeq_Code_Param(2) As Long
+Alias ProgSeq_Code_Param(1) = Param
+Alias ProgSeq_Code_Param(2) = Code
+Public ProgSeq_Result As Long
+' Count Modbus GrabSample events
+Public Attempted_smpl_events 
+' Sample count
+Public Attempted_smpl_cntr 
+' Sample Bottle number and missed samples
+'Bottle
+Public Bottle_num(2)
+Alias Bottle_num(1) = Sample_Tries
+Alias Bottle_num(2) = BN_2
+'Missed samples
+Public Missed_samples 
+'Sampler Voltage
+Public Sampler_voltage(2) 
+Alias Sampler_voltage(1) = Sampler_volts
+Alias Sampler_voltage(2) = SV_2
+'Program State
+Public Prog_state
+'Samples Remaining
+Public Samples_remain
+
+
+
+
+' RESETS
+Public Hach_flow_reset As Boolean
+Public Sampling_Event_Reset As Boolean
+Public Event_flow_reset As Boolean
+Public Attempted_smpl_events_reset As Boolean
+Public Sample_count_reset As Boolean
+Public master_reset As Boolean
+Public execute As Boolean
+
+' COMS FAILURES
+' Battery
+Public battery_coms_result
+Public battery_coms_fail_cntr As Long
+' Water Level
+Public level_coms_result
+Public level_coms_fail_cntr As Long
+' Flow
+Public flow_coms_result
+Public flow_coms_fail_cntr As Long
+' Flow Total
+Public flow_tot_coms_result
+Public flow_tot_reset_coms_result
+Public flow_tot_coms_fail_cntr As Long
+' Rain
+Public rain_950_coms_result
+Public rain_950_coms_fail_cntr As Long
+
+' Autosampler
+' trigger to grab the sample
+Public grab_sample_coms_result
+Public grab_sample_coms_fail_cntr As Long
+' bottle number
+Public bottle_num_coms_result
+Public bottle_num_coms_fail_cntr As Long
+' missed samples
+Public missed_sample_coms_result
+Public missed_sample_coms_fail_cntr As Long
+' sampler voltage
+Public sampler_voltage_coms_result
+Public sampler_voltage_coms_fail_cntr As Long
+' pogram state
+Public prog_state_coms_result
+Public prog_state_coms_fail_cntr As Long
+' samples remain
+Public samples_remain_coms_result
+Public samples_remain_coms_fail_cntr As Long
+
+Public prog_result_coms_result 
+
+'--------------------------------------------------------------------------------------
+'DATA TABLES
+'' Sample Event (when sample is taken by Autosampler)
+'DataTable (Sample_Event,Successful_Smpl > 0.5,1000)
+'	Sample (1,Successful_Smpl,Long)
+'	Sample (1,Sample_pacing_volume,IEEE4)
+'	Sample (1,Flowrate_at_smpl_event,IEEE4)
+'	Totalize (1,SampleCounter,FP2,False)
+'	Sample (1,ModbusInterval,UINT2)
+'EndTable
+' MINUTE
+DataTable (minute,1,-1)
+	DataInterval (0,1,Min,10)
+	Sample (1,ModbusInterval,UINT2)	
+	' Flowmeter
+	Sample (1,Level_950,IEEE4)
+	Sample (1,Flow_950,IEEE4)
+	Sample (1,Flow_total_950,IEEE4)
+	Sample (1,Battery_950,FP2)
+	Sample (1,rain_950,IEEE4)
+	' AutoSampler
+	Sample (1,Attempted_smpl_events,FP2)
+EndTable
+' HOURLY
+DataTable (hourly,1,-1)
+	DataInterval (0,1,hr,10)
+	' DATA
+	Minimum (1,BatVolts,FP2,False,False)
+	Totalize (1,Flow_950,IEEE4,False)
+	Sample (1,rain_950,FP2)
+  ' COMS
+	Sample (1,battery_coms_fail_cntr,FP2)
+	Sample (1,level_coms_fail_cntr,FP2)
+	Sample (1,flow_coms_fail_cntr,FP2)
+	Sample (1,flow_tot_coms_fail_cntr,FP2)
+	Sample (1,ModbusInterval,UINT2)
+EndTable
+' DAILY
+DataTable (daily,1,-1)
+	DataInterval (0,1,hr,10)
+	Minimum (1,BatVolts,FP2,False,False)
+	Totalize (1,Flow_950,IEEE4,False)
+EndTable
+
+
+' --------------------------------------------------------------------------------------------
+'Main Program
+BeginProg
+  ' Turn on switched battery terminal (powers up modem)
+	SW12(1)
+	' Communicate through RS-232 with Flowmeter
+	SerialOpen (ComSDC7,19200,10,0,500)
+	'SerialOpen (ComSDC8,115200,10,0,500) 'sampler 115200?
+		
+  ' Set Scan interval
+	Scan (10,Sec,10,0)
+    ' Measure Datalogger temperature and battery volts
+		PanelTemp (PTemp,250)
+		Battery (BatVolts)
+
+
+		'Call Output Tables
+		CallTable (minute)
+		CallTable (hourly)
+		CallTable (daily)
+
+    ' RESETS
+		If Sampling_Event_Reset Then
+			Sampling_Event_Reset = false
+			SampleOn = false
+			Event_flow_reset = true
+			Attempted_smpl_events_reset = true
+		EndIf
+		' EVENT FLOW
+		If Event_flow_reset Then
+			Event_flow_reset = false
+			Event_flow = 0
+		EndIf
+		' AUTOSAMPLER ATTEMPTS
+		If Attempted_smpl_events_reset Then
+			Attempted_smpl_events_reset = false
+			Attempted_smpl_events = 0
+		EndIf
+		' AUTOSAMPLER COUNTS
+		If Sample_count_reset Then
+			Sample_count_reset = false
+		EndIf
+    ' MASTER RESET
+		If master_reset Then
+			master_reset = false
+			Event_flow = 0
+			bottle_num_coms_fail_cntr = 0
+			missed_sample_coms_fail_cntr = 0
+			grab_sample_coms_fail_cntr = 0
+			Attempted_smpl_cntr = 0
+			prog_state_coms_fail_cntr = 0
+			sampler_voltage_coms_fail_cntr = 0
+			samples_remain_coms_fail_cntr = 0
+			Hach_flow_reset = true
+		EndIf
+
+	NextScan
+
+	SlowSequence
+	Scan (5,Sec,5,0)
+		
+		If IfTime (0,ModbusInterval,Sec) Then execute = TRUE
+
+		If execute Then
+			execute = false
+			SerialOpen (ComSDC7,19200,10,0,500)
+			'SerialOpen (ComSDC8,115200,10,0,500) 'sampler 115200?
+			
+			Delay (1,250,mSec)
+			'------------------------------------------------------
+			'Hach 950 - connected to CS105 w/SDC7 address
+			'measure Hach 950 flowmeter - log current flow rate, total flow, time/date
+			'voltage, etc. @ 1-minute intervals
+
+			'battery volts
+			ModbusMaster (battery_coms_result,ModbusCom1,19200,1,3,Battery_950,39,1,3,250,10)
+			If battery_coms_result > 0 Then battery_coms_fail_cntr += 1
+			'level
+			ModbusMaster (level_coms_result,ModbusCom1,19200,1,3,Level_950,7,1,3,250,10)
+			If level_coms_result > 0 Then level_coms_fail_cntr  += 1
+			'flow
+			ModbusMaster (flow_coms_result,ModbusCom1,19200,1,3,Flow_950,33,1,3,250,10)
+			'total flow
+			ModbusMaster (flow_tot_coms_result,ModbusCom1,19200,1,3,Flow_total_950,75,1,3,250,10)
+			If flow_tot_coms_result > 0 Then flow_tot_coms_fail_cntr += 1
+			
+			'total flow reset
+			If Hach_flow_reset Then
+				modbusdata(4) = 0
+				ModbusMaster (flow_tot_reset_coms_result,ModbusCom1,19200,1,6,Flow_total_950,75,1,3,250,10)
+				Hach_flow_reset = false
+			EndIf
+			
+			'rain
+			ModbusMaster (rain_950_coms_result,ModbusCom1,19200,1,3,rain_950,3,1,3,250,10)
+			If rain_950_coms_result > 0 Then rain_950_coms_fail_cntr += 1
+
+			'---------------------------------------------------------------------------
+			'Hach SD900 Autosampler - trigger sample, log bottle number, log number of missed samples
+      'Grab sample
+
+      '-----------output isn't working
+      ' Program State
+      ModbusMaster (prog_state_coms_result,ModbusCom2,115200,2,03,Prog_state,65,1,3,250,0)
+      If missed_sample_coms_result > 0 Then Prog_state_coms_fail_cntr  += 1
+      Prog_state = HexToDec(Prog_state)
+      
+      '---------------output isn't working
+      ' Samples remaining in program
+      ModbusMaster (samples_remain_coms_result,ModbusCom2,115200,2,03,Samples_remain,72,1,3,250,2)
+      If samples_remain_coms_result > 0 Then samples_remain_coms_fail_cntr  += 1
+      Samples_remain = HexToDec(Samples_remain)
+			
+      '---------------seems to be working as expected though the register is 145, manual said subtract 1?
+      'Missed Sample
+      ' ModbusOption 2: If the Modbus variable array is defined as a 32-bit float or a Long, with no reversal of the byte order (ABCD)
+      ModbusMaster (missed_sample_coms_result,ModbusCom2,115200,2,03,Missed_samples,144,1,3,250,2)
+      If missed_sample_coms_result > 0 Then missed_sample_coms_fail_cntr  += 1
+      Missed_samples = HexToDec(Missed_samples)
+      
+      '--------------first variable seems correct, not sure what's up with second variable
+      ' Bottle Number (Float Length 2)
+      ' ModbusOption 0: Default; 32-bit float or Long, the standard ordering of the 2 byte registers are reversed (CDAB)
+      ModbusMaster (bottle_num_coms_result,ModbusCom2,115200,2,03,Bottle_num,73,2,3,250,0)
+      If bottle_num_coms_result > 0 Then bottle_num_coms_fail_cntr  += 1
+      Bottle_num = HexToDec(Bottle_num)
+      'Sample_Tries = HexToDec(Sample_Tries)
+      BN_2 = HexToDec(BN_2)
+      
+
+      '--------------first variable seems correct, not sure what's up with second variable
+      'Sampler Voltage (Float Length 2)
+      ModbusMaster (sampler_voltage_coms_result,ModbusCom2,115200,2,03,Sampler_voltage,67,2,3,250,0)
+      If sampler_voltage_coms_result > 0 Then sampler_voltage_coms_fail_cntr  += 1
+      'Sampler_voltage = HexToDec(Sampler_voltage)
+      'SV_2 = HexToDec(SV_2)
+      
+      'Read Program Sequence Result
+      ModbusMaster(prog_result_coms_result,ModbusCom2,115200,2,3,ProgSeq_Result,9935,1,3,250,1)
+      'ProgSeq_Result = HexToDec(ProgSeq_Result)
+    EndIf
+  
+  NextScan  
+  
+  SlowSequence
+	Scan (1,Min,0,0)
+	  If SampleOn Then
+	    Attempted_smpl_cntr +=1
+      '---------------------------------------------------------------------------
+			'Hach SD900 Autosampler - trigger sample
+      'Grab sample
+      'Write Program Sequence Code and Program Sequence Parameter
+      Code = 2275
+      Param = 1000
+      ModbusMaster(grab_sample_coms_result,ModbusCom2,115200,2,16,ProgSeq_Code_Param(),9936,2,3,250,1)
+			If grab_sample_coms_result > 0 Then grab_sample_coms_fail_cntr  += 1
+      
+      'ModbusMaster(grab_sample_coms_result,ModbusCom2,115200,2,16,ProgSeq_Code_Param(2),9935',1,3,250,0)
+
+
+		EndIf
+	NextScan
+EndProg
+
+

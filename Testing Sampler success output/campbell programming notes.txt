@@ -1,0 +1,5 @@
+samples delayed by 5 sec (scan interval) from one to the next
+
+bottle number is one off, is it recording the previous samples bottle number?
+
+maybe do minimum time between samples? in case level is fluctuating around trigger level

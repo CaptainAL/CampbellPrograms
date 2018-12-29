@@ -1,0 +1,94 @@
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date:
+'program author:
+
+'Declare Public Variables
+Public PTemp, BatVolts
+Units BatVolts = volts
+Units PTemp = degC
+
+'Declare Other Variables
+Public sampleOn As Boolean = False
+'pulses_sent_to_sampler is when the pulse is sent from the Datalogger; doesnt necessarily means something 
+Public pulses_sent_to_sampler As Long
+'Smpls_attempted is when the sampler actually tries to pump a sample
+Public Smpl_attempted As Float
+Public Smpls_attempted_Counter As Float
+'return signal on Pin F
+Public BottleNum(1) As Float
+'Alias BottleNum(1) = Bottle
+Public BottleNumCounter As Float
+
+
+'Define Data Tables
+'DataTable (Samples,Successful_Smpl > 0.5,1000)
+DataTable (Sample_History,1,1000)
+  'Sample(1,CR1000Time,NSec)
+  Minimum (1,BatVolts,FP2,False,False)
+	Sample (1,PTemp,FP2)
+	'Record if pulse was sent to the sampler
+  Sample(1,pulses_sent_to_sampler,Long)
+  'Record if pulse was sensed and Autosampler was triggered
+  Sample(1,Smpl_attempted,FP2,False)
+  'Record if sample was successful
+  '
+  'Record bottle number of sample
+  
+EndTable
+
+DataTable(Sampler,1,1000)
+  Sample(1,pulses_sent_to_sampler,Long)
+  Sample (1,BottleNum,Long)
+  Sample(1,BottleNumCounter,FP2,False)
+  
+  Sample (1,Smpl_attempted,FP2,False)
+  Sample (1,Smpls_attempted_Counter,Long)
+EndTable
+
+
+'Main Program
+BeginProg
+  'Get values to start at different numbers to make sense to Alex
+  'Pin E doesn't return a signal until the 3rd sample????
+  Smpls_attempted_Counter +=2
+  SW12(1)
+  Scan(30,Sec,0,0)
+    'Pin F - Bottle Number
+    'PulseCount(Dest,Reps=1,PulseChannel=2,PConfig=0 (high freq=0,Low level A/C (pulse only)=1,switchclosure=2),POption=0 (Counts=0,freq_Hz counts/scan=1,RunningAvg of freq= ##
+    'PulseCount (BottleNum,1,2,0,30,1.0,0)
+    TimerIO(BottleNum,11111111,00008000,30,2)
+    'BottleNum -= 1 'count one down to get rid of final pulse (actually return to default high voltage
+    BottleNumCounter += BottleNum
+    'Pin E
+    PulseCount(Smpl_attempted,1,1,1,0,1.0,0)
+    Smpls_attempted_Counter += Smpl_attempted
+    
+    'Determine success/unsuccess
+
+  
+    CallTable Sampler
+  'NextScan
+
+  'SlowSequence
+  'Scan (30,Sec,0,0)
+    PanelTemp (PTemp,250)
+    Battery (BatVolts)
+    'Delay(0,sample_Time_interval,2)
+    'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at accumulation of 1000L
+    If sampleOn Then
+      'Send pulse by turning Port on
+       PortSet(1,1)
+       'keep sending pulse for 500mSec
+       Delay (1,500,mSec)
+       'Turn Port off
+       PortSet (1,0)
+       'Count up for attempted events
+       pulses_sent_to_sampler += 1
+       CallTable Sample_History
+     EndIf
+  NextScan
+EndProg
+
+

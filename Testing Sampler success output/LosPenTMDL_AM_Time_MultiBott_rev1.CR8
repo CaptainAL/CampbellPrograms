@@ -1,0 +1,259 @@
+'CR800Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'rev 3 changed units to cf and cfs as needed
+'rev 4 variable elimination and name changes
+
+'date:
+'program author:
+
+'Declare Public Variables
+PreserveVariables
+
+Const ModbusCom = ComSDC7
+Public ModbusInterval As Long
+
+Public PTemp,BatVolts
+Public rain
+Public twentyfourhr_rain
+Public event_rain
+Public seasonal_rain
+Public sample_pacing_volume
+Public interim_flow_total
+Public sampleOn As Boolean
+Public event_flow
+Public sample_totalized_volume
+Public Events
+
+Public modbusdata(4) As Float
+Alias modbusdata(1) = battery_950
+Alias modbusdata(2) = level_950
+Alias modbusdata(3) = flow_950
+Alias modbusdata(4) = flow_total_950
+
+Public attempted_smpl_events As Long,attempted_smpl_events_reset As Boolean
+
+Public Successful_Smpl,SampleCounter As Long
+Public flowrate_at_smpl_event
+
+
+Public hach_flow_reset As Boolean
+Public event_rain_reset As Boolean
+Public seasonal_rain_reset As Boolean
+Public event_flow_reset As Boolean
+Public sample_count_reset As Boolean
+Public master_reset As Boolean
+Public execute As Boolean
+
+Public battery_result,level_result,flow_result,flow_tot_result
+Public flow_tot_reset_result
+
+Public battery_fail_cntr As Long,level_fail_cntr As Long,flow_fail_cntr As Long
+Public flow_tot_fail_cntr As Long
+
+
+'Declare Other Variables
+Dim i,rain24running(8640)
+
+Units BatVolts = volts
+Units PTemp = degC
+Units battery_950 = volts
+Units level_950 = inches
+Units flow_950 = cfs
+Units event_flow = cf
+Units flow_total_950 = cf
+Units rain = inches
+Units event_rain = inches
+Units twentyfourhr_rain = inches
+Units seasonal_rain = inches
+
+'Define Data Tables
+DataTable (sample_event,Successful_Smpl > 0.5,1000)
+  Sample (1,Successful_Smpl,Long)
+
+  Sample (1,sample_pacing_volume,IEEE4)
+  Sample (1,flowrate_at_smpl_event,IEEE4)
+  Totalize (1,SampleCounter,FP2,False)
+
+  Sample (1,ModbusInterval,UINT2)
+  'flowrate_at_smpl_event = 0
+EndTable
+
+DataTable (minute,1,-1)
+  DataInterval (0,1,Min,10)
+  Minimum (1,BatVolts,FP2,False,False)
+  Sample (1,flow_950,IEEE4)
+  Sample (1,level_950,IEEE4)
+  Sample (1,flow_total_950,IEEE4)
+  Sample (1,sample_totalized_volume,IEEE4)
+  Sample (1,battery_950,FP2)
+  Totalize (1,rain,FP2,False)
+  Totalize (1,event_rain,FP2,False)
+  Sample (1,Successful_Smpl,UINT2)
+  Sample (1,sample_pacing_volume,IEEE4)
+  Sample (1,attempted_smpl_events,FP2)
+  Sample (1,ModbusInterval,UINT2)
+EndTable
+
+DataTable (hourly,1,-1)
+  DataInterval (0,1,hr,10)
+  Minimum (1,BatVolts,FP2,False,False)
+  Totalize (1,flow_950,IEEE4,False)
+  Totalize (1,rain,FP2,False)
+  Sample (1,battery_fail_cntr,FP2)
+  Sample (1,level_fail_cntr,FP2)
+  Sample (1,flow_fail_cntr,FP2)
+  Sample (1,flow_tot_fail_cntr,FP2)
+  Sample (1,ModbusInterval,UINT2)
+EndTable
+
+DataTable (daily,1,-1)
+  DataInterval (0,1,hr,10)
+  Minimum (1,BatVolts,FP2,False,False)
+  Totalize (1,flow_950,IEEE4,False)
+  Totalize (1,rain,FP2,False)
+  '     Totalize (1,rainfall_2,IEEE4,False)
+EndTable
+
+
+'Main Program
+BeginProg
+  SW12(1)
+
+  ModbusInterval = 1
+
+  For i = 1 To 8640
+    rain24running(i) = 0
+  Next i
+
+  SerialOpen (ComSDC7,19200,10,0,500)
+
+  Scan (10,Sec,10,0)
+
+    PanelTemp (PTemp,250)
+    Battery (BatVolts)
+
+    'collect tipping bucket rainfall information dry contact between pins A & C of rain gauge
+    'calculate running 24hr rain total
+    twentyfourhr_rain = 0
+    For i = 8640 To 2 Step -1
+      rain24running(i) = rain24running(i-1)
+    Next i
+    PulseCount (rain,1,2,2,0,0.01,0)
+
+    rain24running(1) = rain
+    event_rain +=rain
+    seasonal_rain += rain
+    For i = 1 To 8640
+      twentyfourhr_rain += rain24running(i)
+    Next i
+
+
+    'instruction to time stamp successful sample event
+    PulseCount (Successful_Smpl,1,1,0,0,1.0,0)
+
+    SampleCounter += Successful_Smpl
+
+    'Call Output Tables
+    CallTable (sample_event)
+    CallTable (minute)
+    CallTable (hourly)
+    CallTable (daily)
+
+    'reset section
+    If seasonal_rain_reset Then
+      seasonal_rain = 0
+      seasonal_rain_reset = false
+    EndIf
+    If event_rain_reset Then
+      event_rain = 0
+      event_rain_reset = false
+    EndIf
+    If event_flow_reset Then
+      event_flow = 0
+      event_flow_reset = false
+    EndIf
+    If attempted_smpl_events_reset Then
+      attempted_smpl_events = 0
+      attempted_smpl_events_reset = false
+    EndIf
+    If sample_count_reset Then
+      SampleCounter = 0
+      sample_count_reset = false
+    EndIf
+    If master_reset Then
+      seasonal_rain = 0
+      event_rain = 0
+      event_flow = 0
+      SampleCounter = 0
+      hach_flow_reset = true
+      master_reset = 0
+    EndIf
+
+  NextScan
+
+  SlowSequence
+  Scan (1,Min,5,0)
+
+    If ModbusInterval = 1 AND IfTime(0,1,min) Then execute = true
+    If ModbusInterval = 15 AND IfTime(0,15,min) Then execute = true
+    If ModbusInterval = 60 AND IfTime(0,60,min) Then execute = true
+    If ModbusInterval = 360 AND IfTime(0,360,min) Then execute = true
+    If ModbusInterval = 720 AND IfTime(0,720,min) Then execute = true
+    If ModbusInterval = 1440 AND IfTime(0,1,day) Then execute = true
+
+    If execute Then
+      execute = false
+      SerialOpen (ComSDC7,19200,10,0,500)
+      Delay (1,250,mSec)
+      'measure Hach 950 flowmeter - log flow, current flow rate, velocity, time/date
+      'voltage, etc. @ 1-minute intervals
+
+      'battery volts
+      ModbusMaster (battery_result,ModbusCom,19200,1,3,modbusdata(1),39,1,3,250,10)
+      If battery_result > 0 Then battery_fail_cntr  += 1
+
+      'level
+      ModbusMaster (level_result,ModbusCom,19200,1,3,modbusdata(2),7,1,3,250,10)
+      If level_result > 0 Then level_fail_cntr  += 1
+
+      'flow
+      ModbusMaster (flow_result,ModbusCom,19200,1,3,modbusdata(3),33,1,3,250,10)
+      If flow_result = 0 Then
+        event_flow += flow_950 * 60 * ModbusInterval
+
+        'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at accumulation of 1000L
+        If sampleOn Then
+          sample_totalized_volume += flow_950 * 60 * ModbusInterval
+          interim_flow_total += flow_950 * 60 * ModbusInterval
+          If interim_flow_total >= sample_pacing_volume AND sample_pacing_volume > 0 Then
+            PortSet(1,1)
+            Delay (1,500,mSec)
+            PortSet (1,0)
+            attempted_smpl_events += 1
+            flowrate_at_smpl_event = flow_950
+            interim_flow_total -= sample_pacing_volume
+          EndIf
+        EndIf
+      Else
+        flow_fail_cntr  += 1
+      EndIf
+
+      'total flow
+      ModbusMaster (flow_tot_result,ModbusCom,19200,1,3,modbusdata(4),75,1,3,250,10)
+      If flow_tot_result > 0 Then flow_tot_fail_cntr += 1
+
+      'total flow reset
+      If hach_flow_reset Then
+        modbusdata(4) = 0
+        ModbusMaster (flow_tot_reset_result,ModbusCom,19200,1,6,modbusdata(4),75,1,3,250,10)
+        hach_flow_reset = false
+      EndIf
+    EndIf
+
+    SerialClose (ComME)
+
+  NextScan
+EndProg
+
+
