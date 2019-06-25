@@ -1,0 +1,195 @@
+'For programming tips, copy this address to your browser
+'search window:https:https://www.campbellsci.com/videos/datalogger-programming
+
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'Date:
+'Program author:
+
+'Declare Constants
+'Example:
+'CONST PI = 3.141592654 or Const PI = 4*ATN(1)
+PreserveVariables
+
+'Declare Public Variables
+'Example:
+Public CRTemp, CR_BatVolts
+Units CRTemp = degC
+Units CR_BatVolts = volts
+
+' FLOWMETER
+' Data from Sigma 950 Flowmeter: Level(inches),Flow(cfs),TotalFlow(cf),Rain(inches)
+Const ModbusCom1 = ComSDC7 'Modbus Address
+Public AvgLevel_950 As Float 'smooth out level readings over a minute
+' Flowmeter data container (5 variables)
+Public modbusdata(3)
+' Battery
+Alias modbusdata(1) = Battery_950
+Units Battery_950 = volts
+' Water Level
+Alias modbusdata(2) = Level_950
+Units Level_950 = inches
+' Flow
+Alias modbusdata(3) = Flow_950
+Units Flow_950 = gpm
+
+' PRESSURE TRANSDUCER
+' PT data (if used)
+Public PT_Level_raw
+Units PT_Level_raw = inches
+
+Public PT_Level_offset = 0.0
+Units PT_Level_offset = inches
+Public PT_Level As Float
+Units PT_Level = inches
+Public PT_flow As Float
+Units PT_flow = gpm
+
+
+' ALARMS
+' Low Battery Alarm
+Public BattEmailSuccess
+Public BattAlarmIsOn As Boolean
+
+' Test Alarm in field
+Public TestEmailNotification As Boolean
+Public TestEmailSuccess 
+
+'Email stuff
+Public Addressees(10) As String *52 = {"7149153360@txt.att.net","alex.messina@woodplc.com"}
+Public TXToAddr As String *530
+Dim i
+Public site_name As String * 20
+Public Subject As String = "Alarm from " 
+Const CRLF = CHR(13)+CHR(10)
+Public Message As String * 250
+Public ServerResponse As String * 50
+
+
+' COMS FAILURES (For ModBus)
+' Battery
+Public Coms_result
+Public Coms_fail_cntr As Long
+Public Coms_results_reset As Boolean
+
+
+'Define Data Tables.
+' COLLECT FLOW DATA ON MINUTELY INTERVAL
+' MINUTE
+DataTable (minute,1,-1)
+	DataInterval (0,5,Min,10)
+	
+	' Flowmeter
+	Median (1,Level_950,12,FP2,False)
+	Median (1,Flow_950,12,FP2,False)
+	Sample (1,Battery_950,FP2)
+
+	' Pressure Transducer
+	Average (1,PT_Level,FP2,False)
+
+
+EndTable
+
+' HOURLY
+DataTable (hourly,1,-1)
+	DataInterval (0,1,hr,10)
+	' DATA
+	Minimum (1,CR_BatVolts,FP2,False,False)
+	Sample (1,Level_950,FP2,False)
+	Sample (1,PT_Level,FP2,False)
+  ' COMS (record failures)
+	Sample (1,Coms_fail_cntr,FP2)
+EndTable
+
+
+'Main Program
+BeginProg
+  ' Turn on switched battery terminal (powers up modem)
+	SW12(1)
+
+	' Communicate through RS-232 with Flowmeter (Sigma 950)
+	SerialOpen (ComSDC7,19200,10,0,500)
+	
+	Scan (60,sec,0,0)
+		PanelTemp (CRTemp,60)
+		Battery (CR_BatVolts)
+		
+    ' Low Battery Alarm
+    If CR_BatVolts <= 11.8 AND BattAlarmIsOn = False Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "Low battery alarm! "+ CRLF
+    	Message = Message + "Currently: " + Round(CR_BatVolts,2) + " V " + CRLF 
+    	Message = Message + "Datalogger time: " + Status.Timestamp
+    	' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  BattEmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+    	EndIf
+      If BattEmailSuccess = -1 Then
+      	BattAlarmIsOn = True
+      	BattEmailSuccess = 1
+      EndIf
+    EndIf
+    
+    If TestEmailNotification = True Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "This is just a test..."+ CRLF
+      ' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  TestEmailSuccess = EmailRelay(TXToAddr,Subject,Message,ServerResponse)
+    	EndIf
+      If TestEmailSuccess = -1 Then
+      	TestEmailNotification = False ' Turn off the notifier if successful
+      	TestEmailSuccess = 1
+      EndIf
+    EndIf
+
+    ' Open Serial connection to Flowmeter, delay to let it connect
+		SerialOpen (ComSDC7,19200,10,0,500)
+		Delay (1,250,mSec)
+		'------------------------------------------------------
+		'Hach 950 - connected to CS105 w/SDC7 address
+		'measure Hach 950 flowmeter - log current flow rate, total flow, time/date
+		'voltage, etc. @ 5-sec intervals, log @ 1-minute intervals
+	
+		' BATT VOLTS
+		ModbusMaster (Coms_result,ModbusCom1,19200,1,3,Battery_950,39,1,3,250,10)
+		
+		' LEVEL
+		ModbusMaster (Coms_result,ModbusCom1,19200,1,3,Level_950,7,1,3,250,10)
+  
+		' FLOW
+		ModbusMaster (Coms_result,ModbusCom1,19200,1,3,Flow_950,33,1,3,250,10)
+    
+    'Calculate the running Avg of Level_950 to smooth out level spikes
+    AvgRun(AvgLevel_950,1,Level_950,12) '12 x 5 sec = 1min.    
+    
+    ' Read Pressure transducer
+    VoltDiff(PT_Level_raw,1,mV2500,1,False,0,_60Hz,0.0375,-15.0)
+    PT_Level = PT_Level_raw + PT_Level_offset
+   
+		
+    If Coms_results_reset Then
+      Coms_results_reset = false
+      Coms_result = 0
+      Coms_fail_cntr = 0
+    EndIf
+
+		'Call Output Tables
+		CallTable minute
+		CallTable hourly
+	NextScan
+EndProg
+

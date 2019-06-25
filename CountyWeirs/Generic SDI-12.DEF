@@ -1,0 +1,57 @@
+4/17/2019
+13:32:35
+Created by Short Cut (3.2)
+Short Cut Program:  Generic SDI-12.DEF
+
+-Wiring for CR800 Series-
+
+  SDI-12 Sensor
+    G:  Ground
+    12V:  Power
+    C3:  Data Line
+
+-Measurement Labels-
+
+  Default Measurements
+    BattV
+    PTemp_C
+
+  SDI-12 Sensor
+    Depth
+    Temp
+
+----------------------------------------------------
+Table: Table1
+Interval: 5 MIN
+Fields:
+ Depth_Avg	Units: Inches
+ Temp_Avg	Units: degF
+
+----------------------------------------------------
+Table: Table2
+Interval: 1440 MIN
+Fields:
+ BattV_Min	Units: Volts
+
+----------------------------------------------------
+Table: DataTableInfo
+Fields:
+ DataTableName(1)
+ DataTableName(2)
+ SkippedRecord(1)
+ SkippedRecord(2)
+ DataRecordSize(1)	Units: records
+ DataRecordSize(2)	Units: records
+ SecsPerRecord(1)
+ SecsPerRecord(2)
+ DataFillDays(1)	Units: days
+ DataFillDays(2)	Units: days
+
+----------------------------------------------------
+Table: Public
+Fields:
+ BattV	Units: Volts
+ PTemp_C	Units: Deg C
+ Depth	Units: Inches
+ Temp	Units: degF
+
