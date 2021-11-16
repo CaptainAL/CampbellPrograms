@@ -1,0 +1,447 @@
+'CR800Series Datalogger
+'date:
+'program author:
+
+'Declare Public Variables
+PreserveVariables
+' ALARMS
+' Low Battery Alarm
+Public BattEmailSuccess
+Public BattAlarmIsOn As Boolean
+
+' Level Alarm
+Public LevelEmailSuccess
+Public LevelAlarmIsOn As Boolean
+
+' Test Alarm in field
+Public TestEmailNotification As Boolean
+Public TestEmailSuccess 
+
+'Email stuff
+Public Addressees(5) As String *52 = {"7149153360@txt.att.net","alex.messina@woodplc.com"}
+Public TXToAddr As String *530
+Dim i
+Public site_name As String * 20
+Public Subject As String = "Alarm from " 
+Const CRLF = CHR(13)+CHR(10)
+Public Message As String * 250
+Public ServerResponse As String * 50
+
+' Panel Temperature and Battery Voltage
+Public CR_Temp, CR_BatVolts
+Units CR_BatVolts = volts
+Units CR_Temp = degC
+
+' Flowmeter Data
+Const ModbusCom1 = ComSDC7
+Public modbusdata(6)
+Alias modbusdata(1) = Battery_950
+Alias modbusdata(2) = Level_950
+Alias modbusdata(3) = Flow_950
+Alias modbusdata(4) = Flow_total_950
+Alias modbusdata(5) = rain_950
+Alias modbusdata(6) = Vel_950
+' Units
+Units Battery_950 = volts
+Units Level_950 = inches
+Units Flow_950 = gpm
+Units Flow_total_950 = gal
+Units Vel_950 = fps
+Units rain_950 = inches
+' Rain Increment
+Dim rain_950_previous
+Public Rain_increment = 0.0
+Units Rain_increment = inches
+
+' PT data (if used)
+' for SDI12 "smart" PT
+Public PT_Data(2)
+Alias PT_Data(1) = PT_Level_raw
+Alias PT_Data(2) = PT_Temp
+Units PT_Level_raw = inches
+Public PT_Level_offset = 0.0
+Units PT_Level_offset = inches
+Public PT_Level As Float
+Units PT_Level = inches
+' Flow from PT
+Public PT_Flow_cfs As Float
+
+
+' AUTOSAMPLER - Flow-Weighted
+'Manual grab sample
+Public Manual_grab_sample As Boolean
+'Flow pacing stuff
+'Manually turn on sampling 
+Public SampleOn As Boolean
+' Set LevelTrigger based on Flowmeter data
+Public LevelTrigger = 100
+Units LevelTrigger = inches
+Public Sampling_is_triggered As Boolean
+'Sampler control
+Public Send_pulse As Boolean
+'Flow pacing
+Public Use_PT_for_pacing As Boolean
+Public Use_950_for_pacing As Boolean
+Public Sample_Pacing_volume
+Dim ModbusInterval = 20 'Scan interval to multiply by cfs to get volume
+Dim Flow_volume_per_scan As Float
+Public FlowIncremental_cntr As Float
+Public Flowrate_at_smpl
+Public Level_at_smpl
+'Bottle tracking
+Public Bottle_Number
+Public Bottle_totalized_volume
+Public Bottle_totalized_aliquots
+Public Event_totalized_volume
+Public Event_totalized_aliquots As Long
+'Absolute UNITS
+Units Sample_Pacing_volume = cf
+Units FlowIncremental_cntr = cf
+Units Flowrate_at_smpl =cfs
+Units Level_at_smpl=inches
+Units Bottle_Number = bottles
+Units Bottle_totalized_volume = cf
+Units Bottle_totalized_aliquots = aliquots
+Units Event_totalized_volume = cf
+Units Event_totalized_aliquots = aliquots
+
+Public Pacing_and_Bottle_change As Boolean
+
+
+' COMS FAILURES (For ModBus)
+Public COMS_950_result
+Public COMS_950_fail_cntr As Long
+Dim result
+
+
+
+' RESETS
+'COMS fail reset
+Public COMS_results_reset As Boolean
+' Autosampler resets
+Public Flow_increment_reset As Boolean
+'Event reset
+Public Sampling_Event_reset As Boolean
+' Master resets
+Public master_reset As Boolean
+
+'Define Data Tables
+DataTable (Sample_History,1,-1)
+	Sample (1,Event_totalized_aliquots,Long)
+  Sample (1,Event_totalized_volume,Float)
+  Sample (1,Bottle_totalized_aliquots,Long)	
+  Sample (1,Bottle_totalized_volume,Float)
+	Sample (1,Bottle_Number,Long)      
+	Sample (1,Sample_Pacing_volume,Long)
+	Sample (1,FlowIncremental_cntr,Long)
+	Sample (1,Flowrate_at_smpl,Float)
+	Sample (1,Level_at_smpl,Float)
+EndTable
+
+' MINUTE
+DataTable (minute,1,-1)
+	DataInterval (0,1,Min,10)
+	' Pressure Transducer
+	Average (1,PT_Level,Float,False)
+	' Flowmeter Data from SD950
+	Average (1,Level_950,Float,False)
+	'Calculate the running median of Level_950 to smooth out level spikes
+	Average (1,Flow_950,Float,False)
+	Sample (1,Flow_total_950,Float)
+	Sample (1,Battery_950,Float)
+	Sample (1,rain_950,Float)
+	' Calculated
+	Sample (1,Rain_increment,Float)
+	'Sampler - FlowWeighted
+	Sample (1,Event_totalized_aliquots,Long)
+  Sample (1,Event_totalized_volume,Long)
+  Sample (1,Bottle_totalized_aliquots,Long)	
+  Sample (1,Bottle_totalized_volume,Long)  
+  Sample (1,FlowIncremental_cntr,Float)
+  Sample (1,Sample_Pacing_volume,Long)
+
+
+  ' COMS failures
+	Sample (1,COMS_950_fail_cntr,Long)
+EndTable
+
+' HOURLY
+DataTable (hourly,1,-1)
+	DataInterval (0,1,hr,10)
+	Minimum (1,CR_BatVolts,FP2,False,False)
+	Minimum (1,Battery_950,FP2,False,False)
+	' Flowmeter Data from SD950
+	Sample (1,Flow_total_950,Float)
+	Sample (1,rain_950,FP2)
+	Totalize (1,Rain_increment,Float,False)	
+	'Sampler - FlowWeighted
+	Sample (1,Event_totalized_aliquots,Long)
+  Sample (1,Event_totalized_volume,Long)
+  Sample (1, Bottle_Number, Long)	
+	Sample (1,Sample_Pacing_volume,Long)
+  Sample (1,Bottle_totalized_aliquots,Long)	
+  Sample (1,Bottle_totalized_volume,Long)
+
+  ' COMS failures
+	Totalize(1,COMS_950_fail_cntr,Long,False)
+
+EndTable
+
+
+'Main Program
+BeginProg
+	SW12(1)
+
+' ################################################	 
+  SetSetting ("Baudrate(COMRS232)",115200)
+  SetStatus ("PPPInterface", 1)
+  SetStatus ("PPPDial", "PPP")
+  SetStatus ("PPPDialResponse","CONNECT")
+  SetSetting ("TelnetEnabled", "False")
+  SetSetting ("PingEnabled", "True")
+' ################################################
+	
+  Scan (60,Sec,0,0)
+  ' Calculate minutely rain increment
+    Rain_increment = rain_950 - rain_950_previous
+    Rain_increment = Round(Rain_increment, 2)
+    rain_950_previous = rain_950 ' store rain_950 for the next minute interval
+    
+    ' Measure Datalogger temperature and battery volts
+		PanelTemp (CR_Temp,250)
+    'Battery check and email Alert
+		Battery (CR_BatVolts) 
+    
+    ' Low Battery Alarm
+    If CR_BatVolts <= 11.8 AND BattAlarmIsOn = False Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "Low battery alarm! "+ CRLF
+    	Message = Message + "Currently: " + Round(CR_BatVolts,2) + " V " + CRLF 
+    	Message = Message + "Datalogger time: " + Status.Timestamp
+    	' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  BattEmailSuccess = EmailRelay(TXToAddr,Subject+ site_name,Message,ServerResponse)
+    	EndIf
+      If BattEmailSuccess = -1 Then
+      	BattAlarmIsOn = True
+      	BattEmailSuccess = 1
+      EndIf
+    EndIf
+    
+    ' Level Alarm
+    If Level_950 >= LevelTrigger AND LevelAlarmIsOn = False Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "Water Level alarm! "+ CRLF 
+    	Message = Message + "Currently: " + Round(Level_950,2) + " in" + CRLF 
+    	Message = Message + "Datalogger time: " + Status.Timestamp
+    	' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  LevelEmailSuccess = EmailRelay(TXToAddr,Subject+ site_name,Message,ServerResponse)
+    	EndIf
+      If LevelEmailSuccess = -1 Then
+      	LevelAlarmIsOn = True
+      	LevelEmailSuccess = 1
+      EndIf
+    EndIf
+    
+    If TestEmailNotification = True Then
+      ' Construct Message
+      Message = " "
+    	Message = Message + "This is just a test..."+ CRLF
+      ' Construct Address list
+      TXToAddr = Addressees(1)
+    	For i=2 To 10
+        If Addressees(i)<>"" Then TXToAddr = TXToAddr & "," & Addressees(i)
+      Next i
+      'Send email if any addresses are present.
+      If TXToAddr<>"" Then
+    	  TestEmailSuccess = EmailRelay(TXToAddr,Subject+ site_name,Message,ServerResponse)
+    	EndIf
+      If TestEmailSuccess = -1 Then
+      	TestEmailNotification = False ' Turn off the notifier if successful
+      	TestEmailSuccess = 1
+      EndIf
+    EndIf
+   
+    'CALL OUTPUT TABLES at least every minute
+  	CallTable minute
+  	CallTable hourly  
+  NextScan  
+  
+  SlowSequence
+	Scan (10,Sec,5,0)
+		SerialOpen (ModbusCom1,19200,10,0,500)
+		Delay (1,250,mSec)
+		'------------------------------------------------------
+		'Hach 950 number 1 - connected to CS105 w/SDC7 address
+		'measure Hach 950 flowmeter - log flow, current flow rate, velocity, time/date
+		'voltage, etc. @ 1-minute intervals
+		' LEVEL
+		ModbusMaster (COMS_950_result,ModbusCom1,19200,1,3,Level_950,7,1,3,250,10)
+		If COMS_950_result > 0 Then COMS_950_fail_cntr  += 1
+		If Level_950 >= LevelTrigger AND SampleOn=True AND Sampling_is_triggered=False Then
+		  Sampling_is_triggered = True
+		EndIf
+		' FLOW
+		ModbusMaster (result,ModbusCom1,19200,1,3,Flow_950,33,1,3,250,10)
+		' TOTAL FLOW
+		ModbusMaster (result,ModbusCom1,19200,1,3,Flow_total_950,75,1,3,250,10)
+		' RAIN
+		ModbusMaster (result,ModbusCom1,19200,1,3,rain_950,3,1,3,250,10)
+		' BATT VOLTS
+		ModbusMaster (result,ModbusCom1,19200,1,3,Battery_950,39,1,3,250,10) 
+  ' Close the serial port to disconnect it
+    SerialClose (ModbusCom1)
+    
+    ' Read Pressure transducer
+    'VoltDiff(PT_Level_raw,1,mV2500,1,False,0,_60Hz,0.0375,-15.0) 'for use with "dumb" Stevens PT
+    SDI12Recorder(PT_Data(),3,"0","M!",1,0,-1)'for use with "smart" Stevens PT
+    PT_Level = PT_Level_raw + PT_Level_offset
+    PT_Level = Round(PT_Level,3)
+    ' Calculat Flow
+    PT_Flow_cfs = 2.49 *  (PT_Level/12.0) ^2.48
+
+	NextScan
+	
+  SlowSequence
+  Scan (20,Sec,3,0)
+		If IfTime (0,ModbusInterval,Sec) Then
+		  ' Give slave logger some time to see this
+      Send_pulse = False
+       
+		  'Won't send pulse if pacing is set to 0
+			If SampleOn = True AND Sampling_is_triggered AND Sample_Pacing_volume > 0 Then
+			  'Flow_950 is in cfs multiply by ModbusInterval to account for 20sec scan interval
+			  If Use_PT_for_pacing = True Then
+			    Flow_volume_per_scan = PT_Flow_cfs * ModbusInterval 'cfs x 20sec = cf
+			  ElseIf Use_950_for_pacing = True Then
+			    Flow_volume_per_scan = Flow_950 * ModbusInterval 'cfs x 20sec = cf
+			  EndIf
+		    FlowIncremental_cntr +=  Flow_volume_per_scan
+			  Event_totalized_volume += Flow_volume_per_scan
+			EndIf
+			
+      'Set Send_pulse to True for display purposes
+      'Won't send pulse if pacing is set to 0
+			If FlowIncremental_cntr >= Sample_Pacing_volume AND Sample_Pacing_volume > 0 Then
+			  Send_pulse = True
+			EndIf
+			
+      'send 25-500ms pulses to sampler @ 12Vdc on pins A&C at accumulation of 1000L
+      ' SEND PULSE
+			If SampleOn = True AND Send_pulse = True Then		
+			  ' Count the total volume towards total sample volume
+			  Bottle_totalized_volume += Sample_Pacing_volume
+			  '  Subtract the pacing volume from Interim volume, remainder goes towards next one
+			  FlowIncremental_cntr -= Sample_Pacing_volume
+
+				' Trigger sampler
+				PortSet(1,1)
+				Delay (1,500,mSec)
+				PortSet (1,0)
+				
+        ' Count up sample events
+				Bottle_totalized_aliquots += 1
+				Event_totalized_aliquots +=1
+				Level_at_smpl = Level_950
+				Flowrate_at_smpl = Flow_950 'this stays in cfs because it is not being used in the calculation
+			  
+        CallTable (Sample_History)
+			EndIf
+		EndIf
+	NextScan
+	
+  SlowSequence
+  Scan(10,Sec,0,0)
+    ' RESETS
+    If Manual_grab_sample Then
+      ' Trigger sampler
+				PortSet(1,1)
+				Delay (1,500,mSec)
+				PortSet (1,0)
+				Manual_grab_sample=False
+		EndIf
+    
+		If Sampling_Event_reset Then
+			Sampling_Event_reset = False
+			SampleOn = False
+			Sampling_is_Triggered = False
+      Send_pulse = False
+      Sample_Pacing_volume = 0
+			FlowIncremental_cntr = 0
+			Bottle_Number = 1
+			Bottle_totalized_volume = 0
+			Bottle_totalized_aliquots = 0
+			Event_totalized_volume = 0
+			Event_totalized_aliquots = 0
+			Rain_increment = 0.0
+      rain_950_previous = rain_950
+			
+		EndIf
+		
+		If Pacing_and_Bottle_change Then
+			Pacing_and_Bottle_change = False
+			Sample_Pacing_volume = 0 'won't send a pulse until the pacing is put in >0
+			Bottle_Number += 1
+			Bottle_totalized_volume = 0
+      Bottle_totalized_aliquots = 0
+		EndIf
+		
+    If Flow_increment_reset Then
+      FlowIncremental_cntr = 0
+    EndIf
+
+    If COMS_results_reset Then
+      COMS_results_reset = false
+      COMS_950_result = 0
+      COMS_950_fail_cntr = 0
+    EndIf
+
+    If master_reset Then
+      master_reset = False
+      Flow_increment_reset = False
+      Pacing_and_Bottle_change = false
+			Sampling_Event_reset = false
+      COMS_results_reset = False
+
+      ' Alarms
+      LevelAlarmIsOn = False
+      BattAlarmIsOn = False
+      
+      ' Sampling controls
+			SampleOn = False
+			Send_pulse = False
+			Sample_Pacing_volume = 0
+      'reset flow and bottle stats
+			FlowIncremental_cntr = 0
+			Bottle_Number = 1
+			Bottle_totalized_volume = 0
+			Bottle_totalized_aliquots = 0
+			Event_totalized_volume = 0
+			Event_totalized_aliquots = 0
+      
+      'Event data
+      Rain_increment = 0.0
+      rain_950_previous = rain_950
+      
+      'COMS result
+      COMS_950_result = 0
+      COMS_950_fail_cntr = 0
+      result = 0
+    EndIf	
+  NextScan 
+EndProg
+
+
