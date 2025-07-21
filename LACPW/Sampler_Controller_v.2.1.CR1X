@@ -1,0 +1,249 @@
+'||::::::::::::::::::::::::::::::::::::::::::::::::||
+'||**CR1000X datalogger                                    (\_/)
+'||**Date:06/09/2025                                      (' x ')
+'||**Revised: 06/30/2025                                 c(")(")
+'||**Program authors: HumbleStormGuy & FuzzyBunny
+'||::::::::::::::::::::::::::::::::::::::::::::::::||
+
+'||-------------------------------------||
+'|| *******   Operation Mode   *********||
+'||-------------------------------------||
+'Const QC_Mode=False
+AngleDegrees
+
+'||-------------------------------------||
+'|| ********   Declarations   **********||
+'||-------------------------------------||
+Public PTemp As Double, Batt_volt As Float
+Public Channel_Lvl_ft
+Public Channel_vel_fps
+Public Channel_FlowRate As Float
+Units Channel_Lvl_ft=feet
+Units Channel_vel_fps=fps
+Units Channel_FlowRate=cfs
+
+'RS-232 Communication Between The Datalogger and Sampler
+Public InString As String * 1000
+Public OutString As String * 1000
+
+'Time-Pace & Flow-Pace Sampling
+Public Sampling_on As Boolean 'Master switch to turn sampling on or off
+Public FlowWeightedSampling As Boolean 'True = Flow weighted, False=Time weighted
+Public TotalSampledVolume As Float 'Track total volume sampled in mL
+
+Public CumulativeTimeMinutes As Long 'Track cumulative minutes to sample
+Public TimePacing_min As Long 'pacing interval in minutes
+Public TimeSampleTrigger As Boolean 'Flag to trigger time-paced ISCO sampler
+Public TimeSampleCount As Long 'Count number of time-paced samples taken
+
+Public CumulativeFlowVolume As Float 'Track cumulative flow volume in cu ft
+Public FlowPacing_cf As Long 'pacing volume in cf
+Public FlowSampleTrigger As Boolean 'Flag to trigger flow-paced ISCO sampler
+Public FlowSampleCount As Long 'Count number of flow-paced samples taken
+
+'Test sample trigger
+Public TestSampler As Boolean
+
+'BigFoot AV Sensor
+Dim BFAV_level_curr
+Dim BFAV_vel_curr
+Units BFAV_level_curr=mA
+Units BFAV_vel_curr=mA
+
+Units PTemp=Deg C
+Units Batt_volt=Volts
+Units TotalSampledVolume=mL
+Units TimeSampleCount=count
+Units CumulativeTimeMinutes=min
+Units CumulativeFlowVolume=cu ft
+Units FlowSampleCount=count
+
+'||-------------------------------------||
+'|| **********   Functions   ***********||
+'||-------------------------------------||
+'To convert BigFoot level sensor measuring current into feet
+Function BFAV_Level (input_current)
+  Dim BFAV_water_level
+  If input_current >0 Then
+    BFAV_water_level = ((input_current - 4)/16)*12 'water level expressed in ft
+    Else 
+      BFAV_water_level = 0
+  EndIf
+  Return(Round(BFAV_water_level,2))
+EndFunction
+
+'To convert BigFoot velocity sensor measuring current into feet per second
+Function BFAV_Velocity (input_current)
+  Dim BFAV_water_velocity
+  If input_current >0 Then
+    BFAV_water_velocity = ((input_current - 4)/16)*9.84 'water velocity expressed in ft/s
+    Else 
+      BFAV_water_velocity = 0
+  EndIf
+  Return(Round(BFAV_water_velocity,2))
+EndFunction
+
+'Subroutine for time-paced ISCO sampler control
+Sub ISCO_Sampler_Control
+  If TotalSampledVolume < 9600 Then 'Continue sampling until 9600 mL
+    If TimeSampleTrigger = True Then
+      TotalSampledVolume = TotalSampledVolume + 200 'Increment total volume by 200 mL
+      TimeSampleCount = TimeSampleCount + 1 'Increment time-paced sample count
+      CumulativeTimeMinutes = 0 'Reset time-pacing
+      TimeSampleTrigger = False 'Reset time-paced trigger flag
+    EndIf
+  EndIf
+EndSub
+
+'Subroutine for flow-paced ISCO sampler control
+Sub ISCO_Flow_Sampler_Control
+  Dim ihear As Boolean
+  OutString = "BTL,1,SVO,100"+CHR(13)
+  SerialOpen (ComC5,9600,0,50,512)
+  If TotalSampledVolume < 9600 Then 'Continue sampling until 9600 mL
+    If FlowSampleTrigger = True Then
+      ihear = SerialOut(ComC5,"?",">",5,50)'send ? CHR(63) to the sampler every 80 milliseconds for 5 times to wake it up.
+      If ihear Then
+        SerialOut(ComC5,CHR(13),">",5,25)'Confirm the sampler is ready to receive commands
+        Delay (0,1,Sec)
+        SerialFlush(ComC5)
+        SerialOut(ComC5,OutString,"",2,50) 'Ask the sampler to collect sample
+        TotalSampledVolume = TotalSampledVolume + 200 'Increment total volume by 200 mL
+        FlowSampleCount = FlowSampleCount + 1 'Increment flow-paced sample count
+        CumulativeFlowVolume = CumulativeFlowVolume - FlowPacing_cf 'Reset cumulative flow volume after sampling
+        FlowSampleTrigger = False 'Reset flow-paced trigger flag
+      EndIf
+    EndIf
+  EndIf
+EndSub       
+    
+Sub ISCO_Read_Status
+  Dim ihear As Boolean
+  SerialOpen (ComC5,9600,0,50,512)
+  ihear = SerialOut(ComC5,"?",">",5,50)'send ? CHR(63) to the sampler every 80 milliseconds for 5 times to wake it up.
+  If ihear Then 
+    SerialOut(ComC5,CHR(13),">",5,25)'Confirm the sampler is ready to receive commands
+    Delay (0,1,Sec)    
+    SerialFlush(ComC5)
+    SerialOut(ComC5,"DATA"+CHR(13),"",2,50)'Ask sampler for data <CR>=CHR(13);<LF>=CHR(10)
+    SerialIn (InString,ComC5,5000,13,1000)
+  EndIf
+EndSub
+
+Sub ISCO_Decode_Status
+'Example Outputs: DE,67128SAMPLER,ID,1622185846,MO,6712,TI,45848.37696,FL,ERROR,VO,008<8880880000,SS,1,B1,45847.62456,B1,45707.60623,B1,45787.68583,CS,7397
+  Dim i As Long, ISCOMsg(20) As String
+  Public ISCOTimestamp, ISCOFlowRate, ISCOSampleVolume
+  Public ISCOSamplerEnable As Boolean
+  Units ISCOFlowRate=cfs
+  Units ISCOSampleVolume=cf
+  If InString <> "" Then
+    SplitStr (ISCOMsg(),InString,",",20,5)
+    For i = 1 To 20
+      If InStr (1,ISCOMsg(i),"TI",2) Then
+        ISCOTimestamp = ISCOMsg(i+1)
+      EndIf
+      If InStr (1,ISCOMsg(i),"FL",2) Then
+        ISCOFlowRate = ISCOMsg(i+1)
+        ISCOFlowRate = ISCOFlowRate * 35.3147
+      EndIf 
+      If InStr (1,ISCOMsg(i),"SS",2) Then
+        ISCOSamplerEnable = ISCOMsg(i+1)
+      EndIf
+      If InStr (1,ISCOMsg(i),"VO",2) Then
+        ISCOSampleVolume = ISCOMsg(i+1)
+        ISCOSampleVolume = ISCOSampleVolume * 35.3147
+      EndIf
+    Next ISCOMsg
+  EndIf    
+EndSub
+
+'||-------------------------------------||
+'|| *********   Table Output   *********||
+'||-------------------------------------||
+
+DataTable(five_min_level,True,-1)
+	DataInterval (0,5,Min,10)
+  Average (1,Channel_Lvl_ft,IEEE4,False)
+	Average (1,PTemp,IEEE4,False)
+	Minimum (1,Batt_volt,IEEE4,False,False)
+EndTable
+	
+DataTable(five_min_flow,True,-1)
+	DataInterval (0,5,Min,10)
+  Average (1,Channel_FlowRate,IEEE4,False)
+  Sample (1,TimeSampleCount,FP2)
+  Sample (1,FlowSampleCount,FP2)
+EndTable
+
+'||-------------------------------------||
+'|| *********   Main Program   *********||
+'||-------------------------------------||
+BeginProg
+
+	Scan (5,Sec,0,0) 'TODO scan this more frequently and running average
+		Battery (Batt_volt)
+    CurrentSE (BFAV_level_curr,1,AutoRange,RG1,1,0,60,1.0,0)
+    Channel_Lvl_ft = BFAV_Level(BFAV_level_curr)
+    CurrentSE (BFAV_vel_curr,1,AutoRange,RG2,1,0,60,1.0,0)
+    Channel_vel_fps = BFAV_Velocity(BFAV_vel_curr)
+		CallTable five_min_level
+	NextScan
+  
+' Manual test sampler to see if connection is good
+  SlowSequence
+    Scan(10,Sec,1,0)
+      If TestSampler = True Then
+        Dim ihear As Boolean
+        OutString = "BTL,1,SVO,100"+CHR(13)
+        SerialOpen (ComC5,9600,0,50,512,0)
+        ihear = SerialOut(ComC5,"?",">",5,50)'send ? CHR(63) to the sampler every 80 milliseconds for 5 times to wake it up.
+        If ihear Then
+          SerialOut(ComC5,CHR(13),">",5,25)'Confirm the sampler is ready to receive commands
+          Delay (0,1,Sec)
+          SerialFlush(ComC5)
+          SerialOut(ComC5,OutString,"",2,50) 'Ask the sampler to collect sample
+        EndIf
+        TestSampler = False 'reset
+        OutString = ""
+      EndIf
+    NextScan
+  
+  SlowSequence
+  	Scan(1,Min,1,0)
+  	  If Sampling_on Then'only go through subroutines if Sampling_on (Master switch to sample is on
+  	    'Flow-weighted sampling program
+  	    If FlowWeightedSampling = True Then 'if flow weighted sampling is on then accumulate flow volume and trigger sampler if needed
+      	  Channel_FlowRate = (Channel_Lvl_ft * 10)*Channel_vel_fps 'Assume rectangular channel for testing purpose
+      	  CumulativeFlowVolume = CumulativeFlowVolume + (Channel_FlowRate * 60) 'Add flow volume (cfs * seconds) every 60 seconds
+      	  If CumulativeFlowVolume >= FlowPacing_cf Then '5000 gallons = 668.4 cu ft
+      	    FlowSampleTrigger = True
+      	  EndIf
+      	  Call ISCO_Flow_Sampler_Control 'Check flow-paced sampling
+      	EndIf
+      	
+      	'Time-weighted sampling program
+      	If FlowWeightedSampling = False Then
+      	  CumulativeTimeMinutes = CumulativeTimeMinutes + 1 'increment minutes up by 1min (==scan interval)
+      	  If CumulativeTimeMinutes >= TimePacing_min Then 'Check for 30-minute interval for time-paced sampling
+      	    TimeSampleTrigger = True
+      	  EndIf
+      	EndIf
+    	  
+    	  Call ISCO_Sampler_Control 'Check time-paced sampling
+    	  'CallTable five_min_flow 'Log flow rates and sampling data
+    	EndIf
+  	NextScan
+
+  SlowSequence
+    Scan(1,Min,0,0)
+ 		  Call ISCO_Read_Status
+      Call ISCO_Decode_Status
+    NextScan
+
+  SlowSequence
+  	Scan(1,Hr,1,0)
+      'Adjust time due to day light saving
+      DaylightSaving (-1,2,1,3,1,1,11,2) 
+  	NextScan
+EndProg

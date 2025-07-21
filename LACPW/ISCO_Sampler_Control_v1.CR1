@@ -1,0 +1,387 @@
+'CR1000 Series Datalogger
+
+'For programming tips, copy this address to your browser
+'search window:https://www.campbellsci.com/videos/datalogger-programming
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'Date:
+'Program author:
+
+'Example program for different types of sampler control
+'Date: June 17, 2016
+'program author: Jacob Davis, CSI
+'https://www.campbellsci.co.jp/forum?forum=1&l=thread&tid=17029
+
+ConstTable (Configuration)
+  'ISCO Serial
+  Const ISCO_Comport = Com1
+
+EndConstTable
+
+PreserveVariables 'This is the simplest way to ensure continued operation after power interruption
+
+
+Dim rTime(9) As Long
+Alias ??rTime(8) = rDayOfWeek
+Alias ??rTime(4) = rHourOfDay
+Alias ??rTime(5) = rMinute
+Dim tempInt As Long
+
+Public ResetSamplingSchedule As Boolean = False 'Manually set this to reset bottle numbers etc. Usually set after changing bottles in sampler.
+Public EnableSamplerControl As Boolean = False 'Manually set this to true when all parameters are set and you are ready for the datalogger to take over.
+'#######Enabling Event#########
+Dim ScheduleEnabled As Boolean = False
+'Delayed Start
+Public DelayStart As Boolean = False 'True to use delay start, false to not delay
+Public StartDayOfWeek As Long = 1 '1 is Sunday. These correspond to day of week from realtime
+Public StartHHMM As Long = 1200 'Enter as 24 hour time
+
+'Threshold Trigger
+Public WaterLevel 'A different parameter could be used to trigger off of, but requires changing code within the body of the program
+Public StartThreshold = 1.0
+Dim ThresholdGood As Boolean
+
+'Disabling Condition
+Public StopThreshold = 0.5
+
+
+'#######Pacing Control#########
+Public TakeSampleAtStartOfInterval As Boolean 'Collect a sample at the beginning of the first interval?
+Dim firstSampleTaken As Boolean 'Keeps track of if first sample was taken
+Public NumberOfInstalledBottles As Long '1 if composite
+Public BottlesPerEvent As Long 'Number of bottles to use per event
+Dim remainingBottlesThisEvent As Long
+Public VolumePerSample As Long 'Volume to put in each bottle
+Public MaxSamples As Long = 24 'Total number of samples to collect before disabling sampler
+Dim samplesTaken As Long
+Dim TakeASample As Boolean 'True when you should start taking a sample this scan
+
+Const TimePaced = True
+Const FlowPaced = False
+Public PacingMode As Boolean = True
+'TODO, add easy to understand way for changing the pacing mode.
+
+'Time Paced
+Public MinutesBetweenSamples As Long
+Public IntervalOffset As Long 'Minutes into the interval to use as an offset
+
+'Flow Paced
+Public Water Flow
+Public FlowBetweenSampleEvents
+Dim accumulatedFlow
+
+'#######Sampler Control########
+Public CurrentBottleNumber As Long
+
+'CSI Smart, ISCO 10164-L cable, or ISCO serial
+
+'ISCO serial
+Public ISCO_WaterLevel, ISCO_Flow
+Public LastBottle As Long, LastVolume As Long
+Public ISCO_SampleCode As Long, ISCO_SampleStatus As String * 20
+Public ISCO_StatusCode As Long, ISCO_Status As String * 20
+
+
+
+
+'Declare Public Variables
+Example:
+Public PTemp, batt_volt
+
+'Declare Other Variables
+Example:
+'Dim Counter
+
+'Define Data Tables.
+DataTable (Test,1,-1) 'Set table size to # of records, or -1 to autoallocate.
+  DataInterval (0,15,Min,10)
+  Minimum (1,batt_volt,FP2,False,False)
+  Sample (1, PTemp, FP2)
+EndTable
+
+Sub ISCO_GetStatus(_Comport As Long,_BottleCode As Long, _SampleVolume As Long, _LastSampleStatus As Long, _CurrentStatus As Long) 'Will poll the sampler for the current status
+  Dim serialResponse As String * 256
+  Dim lBytesBack As Long
+  Dim lString(18) As String
+  Dim lk As Long
+
+  ' send out repeated ? until you get the > prompt
+
+  lBytesBack = SerialOut (_Comport,"?",">",20,10)
+
+  'TODO, don't have feedback for failed request. All values ??currently left as is if failed.
+
+  If lBytesBack Then 'Received the prompt
+    SerialOut (_Comport,CHR(13),">",1,100)
+    SerialFlush(_Comport)
+    ' command STS,2
+    SerialOut (_Comport,"STS,2" & CHR(13),"",1,100) 'Command is echoed back. Wait for the echo
+    SerialIn (serialResponse,_Comport,200,13,256)
+    SplitStr (lString(),serialResponse,",",18,5)
+
+    For lk = 1 To 17
+      If InStr (1,lstring(lk),"STS",2) Then
+        _CurrentStatus = lstring(lk + 1)
+      EndIf
+      If InStr (1,lstring(lk),"BTL",2) Then
+        _BottleCode = lstring(lk + 1)
+      EndIf
+      If InStr (1,lstring(lk),"SVO",2) Then
+        _SampleVolume = lstring(lk + 1)
+      EndIf
+      If InStr (1,lstring(lk),"SOR",2) Then
+        _LastSampleStatus = lstring(lk + 1)
+      EndIf
+    Next lk
+  Else
+    'Failed to get prompt
+  EndIf
+EndSub
+
+Sub ISCO_GetData(_Comport As Long,_BottleCode As Long, _SampleVolume As Long, _LastSampleStatus As Long, _CurrentStatus As Long, _WaterLevel As Float, _Flow As Float) 'Will poll the sampler for the current status and sensor data
+  Dim serialResponse As String * 256
+  Dim lBytesBack As Long
+  Dim lString(56) As String
+  Dim lk As Long
+
+  ' send out repeated ? until you get the > prompt
+
+  lBytesBack = SerialOut (_Comport,"?",">",20,10)
+
+  'TODO, don't have feedback for failed request. All values ??currently left as is if failed.
+
+  If lBytesBack Then 'Received the prompt
+    SerialOut (_Comport,CHR(13),">",1,100)
+    SerialFlush(_Comport)
+    ' command STS,2
+    SerialOut (_Comport,"DATA" & CHR(13),"",1,100) 'Command is echoed back. Wait for the echo
+    SerialIn (serialResponse,_Comport,200,13,256)
+    SplitStr (lString(),serialResponse,",",56,5)
+
+    For lk = 1 To 55
+      If InStr (1,lstring(lk),"STS",2) Then
+        _CurrentStatus = lstring(lk + 1)
+      EndIf
+      If InStr (1,lstring(lk),"BTL",2) Then
+        _BottleCode = lstring(lk + 1)
+      EndIf
+      If InStr (1,lstring(lk),"SVO",2) Then
+        _SampleVolume = lstring(lk + 1)
+      EndIf
+      If InStr (1,lstring(lk),"SOR",2) Then
+        _LastSampleStatus = lstring(lk + 1)
+      EndIf
+      If InStr (1,lstring(lk),"FL",2) Then
+        _Flow = lstring(lk + 1)
+      EndIf
+      If InStr (1,lstring(lk),"LE",2) Then
+        _WaterLevel = lstring(lk + 1)
+      EndIf
+    Next lk
+  Else
+    'Failed to get prompt
+  EndIf
+EndSub
+
+Sub ISCO_TakeSample(_Comport As Long, _BottleNumber As Long, _Volume As Long) 'Will trigger a sample on the specified bottle number and volume
+  Dim lBytesBack As Long
+  Dim _outCommand As String
+  ' send out repeated ? until you get the > prompt
+  lBytesBack = SerialOut (_Comport,"?",">",20,10)
+  If lBytesBack Then
+    SerialOut (_Comport,CHR(13),">",1,100)
+    SerialFlush(_Comport)
+    ' command BTL,2,SVO,200
+    _outCommand = "BTL," & FormatLong (_BottleNumber,"%u") & ",SVO," & FormatLong(_Volume,"%u") & CHR(13)
+    SerialOut (_Comport,_outCommand,"",0,0)
+    'This sub doesn't wait for a response. Request the status later to see if the sample was successful.
+  EndIf
+EndSub
+
+Function ISCO_ConvertStatusCode(SamplerStatusCode As Long) As String * 20
+  Select Case SamplerStatusCode
+  Case 1
+    Return "Waiting for Sample"
+  Case 4
+    Return "Power Failed"
+  Case 5
+    Return "Pump Jammed"
+  Case 6
+    Return "Distributor Jammed"
+  Case 9
+    Return "Sampler Off"
+  Case 12
+    Return "Sample in Progress"
+  Case 20
+    Return "Invalid Command"
+  Case 21
+    Return "Checksum Mismatch"
+  Case 22
+    Return "Invalid Bottle"
+  Case 23
+    Return "Volume Out of Range"
+  Case Else
+    Return "Invalid Code"
+  EndSelect
+EndFunction
+
+Function ISCO_ConvertSampleCode(SampleStatusCode As Long) As String * 20
+  Select Case SampleStatusCode
+  Case 0
+    Return "Sample OK"
+  Case 1
+    Return "No Liquid Found"
+  Case 2
+    Return "Liquid Lost"
+  Case 3
+    Return "User Stopped"
+  Case 4
+    Return "Power Failed"
+  Case 5
+    Return "Pump Jammed"
+  Case 6
+    Return "Distributor Jammed"
+  Case 8
+    Return "Pump Latch Open"
+  Case 11
+    Return "No Distributor"
+  Case 12
+    Return "Sample in Progress"
+  Case Else
+    Return "Invalid Code"
+  EndSelect
+EndFunction
+
+
+
+
+'Main Program
+BeginProg
+
+  'ISCO Serial
+  SerialOpen (ISCO_Comport,9600,3,0,256) 'Configure the comport
+  'Sending the request status message will turn on the sampler.
+  Call ISCO_GetStatus(ISCO_Comport, LastBottle,LastVolume, ISCO_SampleCode,ISCO_StatusCode) 'Will poll the sampler for the current status
+
+
+  Scan (1,Min,0,0)
+    PanelTemp (PTemp,250)
+    Battery (batt_volt)
+    'Enter other measurement instructions
+
+    'Read Status from Sampler
+    Call ISCO_GetStatus(ISCO_Comport, LastBottle,LastVolume, ISCO_SampleCode,ISCO_StatusCode) 'Will poll the sampler for the current status
+
+    'ISCO Serial
+    Call ISCO_GetData(ISCO_Comport, LastBottle,LastVolume, ISCO_SampleCode,ISCO_StatusCode,ISCO_WaterLevel,ISCO_Flow) 'Will poll the sampler for the current status
+    WaterLevel = ISCO_WaterLevel
+    WaterFlow = ISCO_Flow
+
+    ISCO_SampleStatus = ISCO_ConvertSampleCode(ISCO_SampleCode)
+    ISCO_Status = ISCO_ConvertStatusCode(ISCO_StatusCode)
+
+    'Manual reset of sampling control
+    If ResetSamplingSchedule Then
+      ResetSamplingSchedule = False
+      EnableSamplerControl = False
+      CurrentBottleNumber = 0
+      TakeASample = False
+      ScheduleEnabled = False
+      ThresholdGood = False
+      samplesTaken = 0
+      firstSampleTaken = False
+      accumulatedFlow = 0
+      remainingBottlesThisEvent = 0
+    EndIf 'ResetSamplingSchedule
+
+    '#######Enabling Event#########
+    'Delayed Start
+    RealTime (rTime)
+    tempInt = rHourOfDay * 100 + rMinute 'HHMM
+    If DelayStart Then
+      If EnableSamplerControl Then
+        If (tempInt > StartHHMM) AND (StartDayOfWeek = rDayOfWeek) Then
+          ScheduleEnabled = true
+        EndIf
+      Else
+        ScheduleEnabled = false
+      EndIf 'EnableSamplerControl
+    Else
+      If EnableSamplerControl Then
+        ScheduleEnabled = true
+      Else
+        ScheduleEnabled = false
+      EndIf 'EnableSamplerControl
+    EndIf ' DelayStart
+    'Threshold Trigger
+    If WaterLevel > StartThreshold Then ThresholdGood = true
+
+    'Disabling Condition
+    If WaterLevel < StopThreshold Then ThresholdGood = false
+
+
+    '#######Pacing Control#########
+    'Time Paced or Flow Paced
+    If ScheduleEnabled AND ThresholdGood Then
+      If TakeSampleAtStartOfInterval AND firstSampleTaken = false Then
+        'Sample trigger for first sample after enabled
+        firstSampleTaken = true
+        TakeASample = true
+      EndIf
+      'Time paced
+      If PacingMode = TimePaced Then
+        'Time Paced
+        If TimeIntoInterval (IntervalOffset,MinutesBetweenSamples,Min) Then TakeASample = True
+      Else
+        'Flow Paced
+        '!!!!!!!!!!!!!!!! NOTE !!!!!!!!!!!!!!!!!!!!!!!
+        'The time units on the flow and the scan time must be compensated for
+        'If the scan is 1 minute, and the flow is gpm, you get lucky and end up with gallons
+        accumulatedFlow += WaterFlow
+        If accumulatedFlow > FlowBetweenSampleEvents Then
+          accumulatedFlow -= FlowBetweenSampleEvents
+          TakeASample = true
+        EndIf
+      EndIf 'Pacing Mode
+    Else
+      TakeASample = false
+    EndIf 'ScheduleEnabled and ThresholdGood
+
+    '#######Sampler Control########
+    'CSI Smart, ISCO 10164-L cable, or ISCO serial
+
+    'ISCO Serial
+    If TakeASample Then
+      TakeASample = false
+      samplesTaken += 1
+
+      If NumberOfInstalledBottles = 1 Then
+        'Composite
+        CurrentBottleNumber = 1
+      Else
+        'Discrete
+        If remainingBottlesThisEvent <= 0 Then
+          '0 , so first sample this event
+          remainingBottlesThisEvent = BottlesPerEvent
+        EndIf 'remainingBottlesThisEvent
+        CurrentBottleNumber += 1
+        remainingBottlesThisEvent -= 1 'Decrement for this sample
+        If remainingBottlesThisEvent Then TakeASample = True 'Marks to take another sample next scan when there are remaining bottles
+      EndIf
+
+      If samplesTaken >= MaxSamples Then
+        'Sampler will disable itself when it has filled all the bottles
+        EnableSamplerControl = False
+      EndIf
+
+      'Trigger the sampler
+      Call ISCO_TakeSample(ISCO_Comport, CurrentBottleNumber,VolumePerSample)
+
+    EndIf
+
+
+    'Call Output Tables
+    Example:
+    CallTable Test
+  NextScan
+EndProg

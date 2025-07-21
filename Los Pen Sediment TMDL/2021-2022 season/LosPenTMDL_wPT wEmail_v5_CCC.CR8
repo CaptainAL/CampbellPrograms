@@ -314,7 +314,6 @@ BeginProg
   
   
   ' Countdown scan 
-  SlowSequence
 
   ' Set Scan interval for Querying Flowmeter (Shorter to update flow values more often)
   SlowSequence
@@ -388,7 +387,7 @@ BeginProg
     
     ' If Level_950 is above LevelTrigger, and sampling is not already started, then start Sampling
     ' This triggers the first sample, and resets the sample interval counter so that sampling commences
-    If minute.PT_Level_Med(1,1) >= Sample_LevelTrigger AND Sampling_is_triggered = False Then 
+    If minute.PT_Level(1,1) >= Sample_LevelTrigger AND Sampling_is_triggered = False Then 
       Sampling_is_triggered = True
       Send_Pulse = True
       ' Start the sample interval counting from now
